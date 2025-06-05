@@ -124,8 +124,8 @@ For direct lookups (equals/exact matches):
 - Pattern: "Find [Object] with the [field] [Value]"
 
 For contains searches:
-- Pattern: "Show me [Object] records with '[Value]' in the [Field Name]"  
-- Pattern: "[Object] with '[Value]' in [Field Name]"
+- Pattern: "Find [Object] [field]: [Value]" (let Zapier infer contains from partial match)
+- Pattern: "[Object] [field]: [Value]"
 
 Template Guidelines:
 - Use natural, human-like phrasing
@@ -136,16 +136,16 @@ Template Guidelines:
 
 Examples:
 - Raw: "show me accounts with zapier in the name" 
-  → Optimized: "Show me Account records with 'Zapier' in the Account Name"
+  → Optimized: "Find Account name: Zapier"
 
 - Raw: "find john smith contact"
-  → Optimized: "Contacts with 'John Smith' in Name"
+  → Optimized: "Find Contact name: John Smith"
 
 - Raw: "get the QA testing account"
-  → Optimized: "Account records with 'QA' in Account Name"
+  → Optimized: "Find Account name: QA"
 
 - Raw: "contact email chris@alibre.com"
-  → Optimized: "Find Contact with the email chris@alibre.com"
+  → Optimized: "Find Contact email: chris@alibre.com"
 
 - Raw: "account QA TESTING"
   → Optimized: "Find Account name: QA TESTING"
