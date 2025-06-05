@@ -108,47 +108,44 @@ class SalesforceWebAssistant:
 Available Zapier Tools:
 {chr(10).join(f"- {tool}" for tool in available_zapier_tools)}
 
-Your task is to analyze the user's raw query and transform it into simple, natural language that mimics how humans would phrase searches, allowing Zapier's MCP to correctly infer the operator and isolate the search value.
+Your primary goal is to construct an input string that Zapier can parse successfully for its object, fieldToSearch, operator, and searchValue parameters, and that will not be rejected by the Zapier MCP endpoint (avoiding 405 errors).
 
 Guidelines for optimization:
 1. Identify the core intent (find single record, find multiple records, create, update, etc.)
 2. Determine the target Salesforce Object (Account, Contact, Opportunity, Lead, etc.)
 3. Extract relevant field names, values, and search operators
 4. Determine if the user expects single or multiple results
-5. Generate output using simple, natural phrasing that avoids explicit operator keywords
+5. Generate output using simple, natural phrasing
 
-CRITICAL: Your output MUST be a simple, natural language string that helps Zapier correctly parse the object, field, and search value. Avoid using explicit operator words like "contains", "equals" that confuse Zapier's search value extraction.
+CRITICAL: Your output MUST be a simple, natural language string that helps Zapier correctly parse the search parameters. If the user query is ambiguous or lacks detail, formulate a reasonable search instruction for Zapier.
 
-For direct lookups (equals/exact matches):
+For partial/contains searches (when user says "with X in name", "having X", etc.):
+- Use broader search terms that encourage Zapier to use contains logic
+- Pattern: "Show me [Object] records with [Value] in the [Field]"
+- Pattern: "Find [Object] records containing [Value]"
+
+For exact lookups (specific names, emails, IDs):
 - Pattern: "Find [Object] [field]: [Value]"
-- Pattern: "Find [Object] with the [field] [Value]"
-
-For contains searches:
-- Pattern: "Find [Object] [field]: [Value]" (let Zapier infer contains from partial match)
-- Pattern: "[Object] [field]: [Value]"
 
 Template Guidelines:
 - Use natural, human-like phrasing
-- Always enclose search values in single quotes to help Zapier isolate them
+- For partial searches, use phrasing that encourages Zapier to use contains logic
 - Use plural forms (records, accounts, contacts) for multiple results
-- Use singular forms for unique lookups
 - Map user terms to proper field names (name → Account Name, email → Email)
+- If you cannot confidently create a valid instruction, return: ERROR:NLU_CONFUSION
 
 Examples:
-- Raw: "show me accounts with zapier in the name" 
-  → Optimized: "Find Account name: Zapier"
+- Raw: "show me accounts with QA in the name" 
+  → Optimized: "Show me Account records with QA in the Account Name"
 
 - Raw: "find john smith contact"
-  → Optimized: "Find Contact name: John Smith"
+  → Optimized: "Show me Contact records with John Smith in the Name"
 
-- Raw: "get the QA testing account"
-  → Optimized: "Find Account name: QA"
+- Raw: "account QA TESTING" (exact match)
+  → Optimized: "Find Account name: QA TESTING"
 
 - Raw: "contact email chris@alibre.com"
   → Optimized: "Find Contact email: chris@alibre.com"
-
-- Raw: "account QA TESTING"
-  → Optimized: "Find Account name: QA TESTING"
 
 - Raw: "create new lead for jane doe at acme corp"
   → Optimized: "Create new Salesforce Lead record with FirstName 'Jane', LastName 'Doe', Company 'Acme Corp'"
@@ -742,7 +739,17 @@ def send_command():
         logger.info(f"Processing raw query: {command}")
         optimized_command = assistant.get_optimized_zapier_input(command, assistant.available_zapier_tools)
         
+        # Debug logging for NLU output
+        logger.info(f"NLU Transform: '{command}' → '{optimized_command}'")
+        
         # Check if NLU couldn't understand the query
+        if optimized_command == "ERROR:NLU_CONFUSION":
+            return jsonify({
+                'success': False,
+                'error': "Sorry, I couldn't understand your request. Could you please try rephrasing it or be more specific?",
+                'type': 'clarification_needed'
+            })
+        
         if "I need more specific information" in optimized_command or "Could you specify" in optimized_command:
             return jsonify({
                 'success': False,
