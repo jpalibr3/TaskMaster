@@ -125,16 +125,16 @@ Guidelines for optimization:
 
 Examples:
 - Raw: "show me accounts with zapier in the name" 
-  → Optimized: "Find Salesforce Account records with Account Name containing Zapier"
+  → Optimized: "Find Salesforce Account where Name contains Zapier"
 
 - Raw: "find john smith contact"
-  → Optimized: "Find Salesforce Contact records with Name containing John Smith"
+  → Optimized: "Find Salesforce Contact where Name contains John Smith"
 
 - Raw: "get the QA testing account"
-  → Optimized: "Find Salesforce Account records with Name containing QA TESTING"
+  → Optimized: "Find Salesforce Account where Name contains QA"
 
 - Raw: "find account QA TESTING"
-  → Optimized: "Find Salesforce Account records with Name containing QA TESTING"
+  → Optimized: "Find Salesforce Account where Name contains QA"
 
 - Raw: "create new lead for jane doe at acme corp"
   → Optimized: "Create new Salesforce Lead record with FirstName 'Jane', LastName 'Doe', Company 'Acme Corp'"
