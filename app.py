@@ -93,8 +93,9 @@ class SalesforceWebAssistant:
     
     def get_optimized_zapier_input(self, raw_user_query: str, available_zapier_tools: List[str]) -> str:
         """
-        NLU pre-processing function that transforms raw user queries into optimized Zapier inputs.
-        Uses OpenAI to analyze the query and generate explicit instructions for Zapier MCP.
+        NLU pre-processing function that transforms raw user queries into SOQL-based Zapier inputs.
+        Stage 1: Generate SOQL query from user request
+        Stage 2: Construct Zapier instruction to use "Find Record(s) by Query" tool
         """
         try:
             # Ensure client is initialized
@@ -102,86 +103,69 @@ class SalesforceWebAssistant:
                 logger.error("OpenAI client not initialized")
                 return raw_user_query
                 
-            # Construct the system prompt for NLU analysis
-            system_prompt = f"""You are an AI that translates raw user Salesforce queries into optimized inputs for a Zapier MCP tool.
+            # Stage 1: Generate SOQL Query
+            soql_system_prompt = f"""You are an AI assistant that translates raw, natural language user queries about Salesforce into valid SOQL (Salesforce Object Query Language) SELECT statements.
 
-Available Zapier Tools:
-{chr(10).join(f"- {tool}" for tool in available_zapier_tools)}
+Your goal is to construct a SOQL query that accurately reflects the user's request for finding information.
 
-Your primary goal is to construct an input string that Zapier can parse successfully for its object, fieldToSearch, operator, and searchValue parameters, and that will not be rejected by the Zapier MCP endpoint (avoiding 405 errors).
-
-Guidelines for optimization:
-1. Identify the core intent (find single record, find multiple records, create, update, etc.)
-2. Determine the target Salesforce Object (Account, Contact, Opportunity, Lead, etc.)
-3. Extract relevant field names, values, and search operators
-4. Determine if the user expects single or multiple results
-5. Generate output using simple, natural phrasing
-
-CRITICAL: Your output MUST be a simple, natural language string that helps Zapier correctly parse the search parameters. If the user query is ambiguous or lacks detail, formulate a reasonable search instruction for Zapier.
-
-For EQUALS/direct lookups (specific names, emails, IDs):
-- Pattern: "Find [Object] [field]: [Value]"
-- Pattern: "Find [Object] with the [field] [Value]"
-
-For CONTAINS searches (when user says "with X in name", "having X", etc.):
-- Pattern for name searches: "Show me [object_plural] with the name [Value] in the [object_singular] name"
-- Pattern for other fields: "Show me [object_plural] with [Value] in the [Field Name]"
-
-CRITICAL: Use the exact phrasing patterns that Zapier has shown it can parse correctly. For contains searches on names, replicate the structure: "Show me accounts with the name [value] in the account name"
-
-Template Guidelines:
-- Use the simplest possible phrasing for Zapier
-- For contains searches on names, use the proven pattern exactly
-- For exact matches, use the colon format: "Find [Object] [field]: [Value]"
-- Map user terms to proper field names (name → Account Name, email → Email)
-- If you cannot confidently create a valid instruction, return: ERROR:NLU_CONFUSION
+Guidelines:
+1. Identify the main Salesforce Object (e.g., Account, Contact, Opportunity) for the FROM clause.
+2. Determine essential fields for the SELECT clause (always include Id, Name. For Accounts: Type, BillingCity, BillingState. For Contacts: Email, Phone, Title, AccountId. Add other fields if clearly implied by the user's query).
+3. Construct the WHERE clause:
+   - For "equals" intents on text fields: `FieldName = 'SearchValue'`
+   - For "contains" intents on text fields: `FieldName LIKE '%SearchValue%'` (ensure wildcards '% %' are used).
+   - For other operators (>, <, >=, <=, starts with), generate appropriate SOQL.
+   - Handle simple AND/OR conditions if specified.
+4. Add `LIMIT` clauses: `LIMIT 1` for queries implying a unique record, `LIMIT 20` (or a reasonable default) for broader searches.
+5. Ensure `SearchValue` strings within the SOQL are properly escaped if they contain single quotes (e.g., "O'Malley" becomes "O\\'Malley").
+6. If the user query is too vague to construct a valid SOQL query, or if it's not a 'find' operation, return the specific string "ERROR:SOQL_GENERATION_FAILED".
 
 Examples:
-- Raw: "show me accounts with QA in the name" 
-  → Optimized: "Show me accounts with the name QA in the account name"
+- User Query: "show me accounts with QA in name"
+  Generated SOQL: "SELECT Id, Name, Type, BillingCity, BillingState FROM Account WHERE Name LIKE '%QA%' LIMIT 20"
 
-- Raw: "find john smith contact"
-  → Optimized: "Show me contacts with the name John Smith in the contact name"
+- User Query: "contact email chris@alibre.com"
+  Generated SOQL: "SELECT Id, Name, Email, Phone, Title, AccountId FROM Contact WHERE Email = 'chris@alibre.com' LIMIT 1"
 
-- Raw: "account QA TESTING" (exact match)
-  → Optimized: "Find Account name: QA TESTING"
+- User Query: "account QA TESTING"
+  Generated SOQL: "SELECT Id, Name, Type, BillingCity, BillingState FROM Account WHERE Name = 'QA TESTING' LIMIT 1"
 
-- Raw: "contact email chris@alibre.com"
-  → Optimized: "Find Contact email: chris@alibre.com"
+- User Query: "find john smith contact"
+  Generated SOQL: "SELECT Id, Name, Email, Phone, Title, AccountId FROM Contact WHERE Name LIKE '%John Smith%' LIMIT 20"
 
-- Raw: "create new lead for jane doe at acme corp"
-  → Optimized: "Create new Salesforce Lead record with FirstName 'Jane', LastName 'Doe', Company 'Acme Corp'"
+Respond only with the SOQL query string or ERROR:SOQL_GENERATION_FAILED, nothing else."""
 
-If the query is unclear or missing critical information, return: "I need more specific information. Could you specify the Salesforce object type (Account, Contact, etc.) and search criteria?"
-
-Respond only with the optimized input string, nothing else."""
-
-            # Make the NLU call to OpenAI
+            # Make the SOQL generation call to OpenAI
             # the newest OpenAI model is "gpt-4o" which was released May 13, 2024.
             # do not change this unless explicitly requested by the user
-            response = self.client.chat.completions.create(
+            soql_response = self.client.chat.completions.create(
                 model="gpt-4o",
                 messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": f"Raw query: {raw_user_query}"}
+                    {"role": "system", "content": soql_system_prompt},
+                    {"role": "user", "content": raw_user_query}
                 ],
-                max_tokens=300,
-                temperature=0.1  # Low temperature for consistent, focused responses
+                max_tokens=200,
+                temperature=0.1
             )
             
-            # Safely extract the response content
-            if response.choices and response.choices[0].message and response.choices[0].message.content:
-                optimized_input = response.choices[0].message.content.strip()
+            # Safely extract the SOQL response
+            if soql_response.choices and soql_response.choices[0].message and soql_response.choices[0].message.content:
+                generated_soql = soql_response.choices[0].message.content.strip()
             else:
-                logger.error("Invalid response from OpenAI")
-                return raw_user_query
+                logger.error("Invalid SOQL response from OpenAI")
+                return "ERROR:SOQL_GENERATION_FAILED"
             
-            # Check if the NLU model couldn't understand the query
-            if "I need more specific information" in optimized_input or "Could you specify" in optimized_input:
-                return optimized_input
+            logger.info(f"Generated SOQL: {generated_soql}")
             
-            logger.info(f"NLU Transform: '{raw_user_query}' → '{optimized_input}'")
-            return optimized_input
+            # Stage 2: Check for errors and construct Zapier instruction
+            if generated_soql == "ERROR:SOQL_GENERATION_FAILED":
+                return "Sorry, I could not translate your request into a Salesforce query. Please try rephrasing with more specific details."
+            
+            # Construct the final Zapier instruction using the SOQL query
+            zapier_instruction = f"Use Salesforce: Find Record(s) by Query with the SOQL query: '{generated_soql}'"
+            logger.info(f"Final Zapier instruction: {zapier_instruction}")
+            
+            return zapier_instruction
             
         except Exception as e:
             logger.error(f"NLU pre-processing failed: {e}")

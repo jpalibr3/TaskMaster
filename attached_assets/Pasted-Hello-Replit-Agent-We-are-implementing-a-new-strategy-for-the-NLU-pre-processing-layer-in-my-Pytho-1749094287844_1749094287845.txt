@@ -1,0 +1,68 @@
+Hello Replit Agent,
+
+We are implementing a new strategy for the NLU pre-processing layer in my Python web application for Salesforce interaction via Zapier MCP. The previous methods of generating natural language for Zapier's standard "Find Record(s)" tool have led to persistent searchValue parsing issues.
+
+New Core Strategy: The NLU Pre-processor will first generate a SOQL query string from the user's flexible request. Then, it will construct a natural language input string for Zapier that explicitly instructs Zapier to use its "Salesforce: Find Record(s) by Query" tool with the generated SOQL.
+
+This approach aims to give us precise control over the Salesforce query by leveraging SOQL, while still using the existing Zapier MCP infrastructure.
+
+Detailed Requirements for Modifying the NLU Pre-processor (get_optimized_zapier_input function in Python backend):
+
+NLU Task - Stage 1: Generate SOQL Query:
+
+The NLU model (e.g., GPT-4 via client.chat.completions.create) must first analyze the raw user query to produce a valid SOQL SELECT statement.
+System Prompt for SOQL Generation (within the NLU function):
+You are an AI assistant that translates raw, natural language user queries about Salesforce into valid SOQL (Salesforce Object Query Language) SELECT statements.
+Your goal is to construct a SOQL query that accurately reflects the user's request for finding information.
+
+Guidelines:
+1. Identify the main Salesforce Object (e.g., Account, Contact, Opportunity) for the FROM clause.
+2. Determine essential fields for the SELECT clause (always include Id, Name. For Accounts: Type, BillingCity, BillingState. For Contacts: Email, Phone, Title, AccountId. Add other fields if clearly implied by the user's query).
+3. Construct the WHERE clause:
+   - For "equals" intents on text fields: `FieldName = 'SearchValue'`
+   - For "contains" intents on text fields: `FieldName LIKE '%SearchValue%'` (ensure wildcards '% %' are used).
+   - For other operators (>, <, >=, <=, starts with), generate appropriate SOQL.
+   - Handle simple AND/OR conditions if specified.
+4. Add `LIMIT` clauses: `LIMIT 1` for queries implying a unique record, `LIMIT 20` (or a reasonable default) for broader searches.
+5. Ensure `SearchValue` strings within the SOQL are properly escaped if they contain single quotes (e.g., "O'Malley" becomes "O\'Malley").
+6. If the user query is too vague to construct a valid SOQL query, or if it's not a 'find' operation, return the specific string "ERROR:SOQL_GENERATION_FAILED".
+
+Example 1 (User Query): "show me accounts with QA in name"
+Generated SOQL: "SELECT Id, Name, Type, BillingCity, BillingState FROM Account WHERE Name LIKE '%QA%' LIMIT 20"
+
+Example 2 (User Query): "contact email chris@alibre.com"
+Generated SOQL: "SELECT Id, Name, Email, Phone, Title, AccountId FROM Contact WHERE Email = 'chris@alibre.com' LIMIT 1"
+This part of the NLU function will output either a SOQL string or the error indicator.
+NLU Task - Stage 2: Construct input String for Zapier MCP:
+
+If Stage 1 produced a SOQL string, the NLU function (or a subsequent step) will then take this SOQL string and embed it into a natural language instruction for Zapier.
+Template for the input string to be sent to Zapier: "Use Salesforce: Find Record(s) by Query with the SOQL query: '[GENERATED_SOQL_STRING]'"
+Crucial: The [GENERATED_SOQL_STRING] part must be the exact SOQL query. Enclosing the SOQL string in single quotes within this instruction might help Zapier treat it as a single parameter.
+If Stage 1 returned "ERROR:SOQL_GENERATION_FAILED", this Stage 2 output should also be that error indicator, or a user-friendly version like "Sorry, I could not translate your request into a Salesforce query. Please try rephrasing."
+Modifying the Backend API Endpoint (e.g., /send_command):
+
+The endpoint calls get_optimized_zapier_input().
+If it receives an error message, it relays that to the frontend.
+Otherwise, it takes the fully constructed string (e.g., "Use Salesforce: Find Record(s) by Query with the SOQL query: 'SELECT ...'") and passes this entire string as the input to client.responses.create(...) for the Zapier MCP call.
+List of Available Zapier Salesforce Tools (for NLU's broader context, though it's now primarily generating SOQL for a specific tool):
+
+The NLU's system prompt should still be aware of the general toolset to understand user intent, even if the final output targets the SOQL tool.
+[
+    "Salesforce: Find Record", "Salesforce: Find Record(s)",
+    "Salesforce: Find Record(s) by Query", // Primary target for this strategy
+    "Salesforce: API Request (Beta)",    // Potential fallback if direct SOQL works better here
+    /* ... other tools ... */
+    "Salesforce: Create Record", "Salesforce: Update Record"
+]
+Handling Zapier's Response from a SOQL Query:
+
+The JSON structure returned by Zapier for a "Find Record(s) by Query" tool might differ from the simpler "Find Record(s)" tool. The Python code that parses Zapier's response and prepares data for the frontend will likely need adjustments to handle the record structure returned by a SOQL execution.
+Request to Replit Agent:
+Please update the Python backend code, specifically the NLU pre-processing function (get_optimized_zapier_input).
+
+This function should now first call an OpenAI LLM (e.g., GPT-4) with a system prompt designed to convert the user's raw natural language query into a SOQL query string (as per guidelines in Requirement 1 & 2 above). Implement the "ERROR:SOQL_GENERATION_FAILED" fallback.
+If SOQL is successfully generated, the function should then construct a final input string for Zapier using the template: "Use Salesforce: Find Record(s) by Query with the SOQL query: '[GENERATED_SOQL_STRING]'"
+The main API endpoint (e.g., /send_command) will use this final string as the input for the client.responses.create(...) call to Zapier.
+Include robust logging for the generated SOQL string AND the final input string sent to Zapier.
+Add comments indicating where the response parsing logic might need changes to accommodate results from a SOQL query via Zapier.
+This strategy hinges on Zapier's generic MCP endpoint being able to interpret the instruction "Use Salesforce: Find Record(s) by Query with..." and correctly invoking that specific Zapier tool with the provided SOQL. This is our current best attempt to give Zapier precise instructions while still using its MCP framework. 
