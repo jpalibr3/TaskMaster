@@ -8,6 +8,8 @@ import os
 import json
 import logging
 import requests
+import re
+import time
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 from flask import Flask, render_template, request, jsonify, send_file
@@ -392,24 +394,51 @@ Respond only with the SOQL query string or ERROR:SOQL_GENERATION_FAILED, nothing
         return available_tools[0] if available_tools else None
     
     def call_zapier_mcp(self, action: str) -> Dict[str, Any]:
-        """Make request to Zapier MCP server."""
+        """Make request to Zapier MCP server, prioritizing SOQL if provided."""
         try:
             headers = {
                 "Authorization": f"Bearer {self.zapier_mcp_api_key}",
                 "Content-Type": "application/json",
                 "Accept": "application/json, text/event-stream"
             }
-            
-            # Get available tools
-            tools_payload = {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/list"
-            }
-            
-            tools_response = requests.post(self.zapier_mcp_url, headers=headers, json=tools_payload, timeout=30)
-            
-            if tools_response.status_code == 200:
+
+            call_payload = None
+            tool_name_for_logging = "unknown"
+
+            # Check if the action is a pre-formatted SOQL command
+            soql_match = re.search(r"Use Salesforce: Find Record\(s\) by Query with the SOQL query:\s*'(.*)'", action)
+
+            if soql_match:
+                soql_query = soql_match.group(1)
+                tool_name_for_logging = "Salesforce: Find Record(s) by Query"
+                call_payload = {
+                    "jsonrpc": "2.0",
+                    "id": "soql_call_" + str(int(time.time())),
+                    "method": "tools/call",
+                    "params": {
+                        "name": tool_name_for_logging,
+                        "arguments": {
+                            "query": soql_query
+                        }
+                    }
+                }
+                logger.info(f"Calling Zapier with SOQL: Tool='{tool_name_for_logging}', Query='{soql_query}'")
+            else:
+                # Fallback to original behavior for non-SOQL commands
+                logger.info(f"Action '{action}' is not a SOQL command, using general tool selection.")
+                
+                # Get available tools
+                tools_payload = {
+                    "jsonrpc": "2.0",
+                    "id": "list_tools_" + str(int(time.time())),
+                    "method": "tools/list"
+                }
+                
+                tools_response = requests.post(self.zapier_mcp_url, headers=headers, json=tools_payload, timeout=30)
+                
+                if tools_response.status_code != 200:
+                    return {"success": False, "error": f"Failed to get tools: {tools_response.status_code} - {tools_response.text}"}
+                
                 events = self.parse_sse_response(tools_response.text)
                 
                 # Find available tools
@@ -421,103 +450,83 @@ Respond only with the SOQL query string or ERROR:SOQL_GENERATION_FAILED, nothing
                             available_tools = event_data['result']['tools']
                             break
                 
-                if available_tools:
-                    # Select appropriate tool based on action
-                    selected_tool = self.select_tool(action, available_tools)
-                    
-                    if selected_tool:
-                        # Call the selected tool with better parameters
-                        tool_args = self.prepare_tool_arguments(action, selected_tool)
-                        
-                        call_payload = {
-                            "jsonrpc": "2.0",
-                            "id": 2,
-                            "method": "tools/call",
-                            "params": {
-                                "name": selected_tool['name'],
-                                "arguments": tool_args
-                            }
-                        }
-                        
-                        call_response = requests.post(self.zapier_mcp_url, headers=headers, json=call_payload, timeout=60)
-                        
-                        if call_response.status_code == 200:
-                            call_events = self.parse_sse_response(call_response.text)
-                            
-                            # Extract result and handle various response formats
-                            for event in call_events:
-                                if event.get('type') == 'message' and isinstance(event.get('data'), dict):
-                                    event_data = event['data']
-                                    if 'result' in event_data:
-                                        result = event_data['result']
-                                        # Check if result contains actual data or follow-up questions
-                                        if isinstance(result, dict) and 'content' in result:
-                                            content = result['content']
-                                            if isinstance(content, list) and len(content) > 0:
-                                                first_content = content[0]
-                                                if isinstance(first_content, dict) and 'text' in first_content:
-                                                    text_content = first_content['text']
-                                                    # Try to parse as JSON if it looks like JSON
-                                                    try:
-                                                        parsed_content = json.loads(text_content)
-                                                        if 'followUpQuestion' in parsed_content:
-                                                            # Handle follow-up questions by providing a default response
-                                                            logger.info(f"Received follow-up question: {parsed_content['followUpQuestion']}")
-                                                            return {
-                                                                "success": False,
-                                                                "error": f"Zapier requires more specific parameters. {parsed_content['followUpQuestion']}"
-                                                            }
-                                                        else:
-                                                            return {
-                                                                "success": True,
-                                                                "data": parsed_content,
-                                                                "tool_used": selected_tool['name']
-                                                            }
-                                                    except json.JSONDecodeError:
-                                                        # Return text content as is
-                                                        return {
-                                                            "success": True,
-                                                            "data": text_content,
-                                                            "tool_used": selected_tool['name']
-                                                        }
-                                        
-                                        return {
-                                            "success": True,
-                                            "data": result,
-                                            "tool_used": selected_tool['name']
-                                        }
-                            
-                            return {
-                                "success": True,
-                                "data": call_events,
-                                "tool_used": selected_tool['name']
-                            }
-                        else:
-                            return {
-                                "success": False,
-                                "error": f"Tool call failed: {call_response.status_code} - {call_response.text}"
-                            }
-                    else:
-                        return {
-                            "success": False,
-                            "error": "No suitable tool found for this action"
-                        }
-                else:
-                    return {
-                        "success": False,
-                        "error": "No tools available from Zapier MCP"
-                    }
-            else:
-                return {
-                    "success": False,
-                    "error": f"Failed to get tools: {tools_response.status_code} - {tools_response.text}"
-                }
+                if not available_tools:
+                    return {"success": False, "error": "No tools available from Zapier MCP"}
                 
+                # Select appropriate tool based on action
+                selected_tool = self.select_tool(action, available_tools)
+                
+                if not selected_tool:
+                    return {"success": False, "error": "No suitable Zapier tool found for this action."}
+                
+                tool_name_for_logging = selected_tool['name']
+                tool_args = self.prepare_tool_arguments(action, selected_tool)
+                
+                call_payload = {
+                    "jsonrpc": "2.0",
+                    "id": "non_soql_call_" + str(int(time.time())),
+                    "method": "tools/call",
+                    "params": {
+                        "name": tool_name_for_logging,
+                        "arguments": tool_args
+                    }
+                }
+                logger.info(f"Calling Zapier with non-SOQL: Tool='{tool_name_for_logging}', Args='{tool_args}'")
+
+            if not call_payload:
+                return {"success": False, "error": "Internal error: Could not determine call payload."}
+
+            call_response = requests.post(self.zapier_mcp_url, headers=headers, json=call_payload, timeout=60)
+
+            if call_response.status_code == 200:
+                call_events = self.parse_sse_response(call_response.text)
+                for event in call_events:
+                    if event.get('type') == 'message' and isinstance(event.get('data'), dict):
+                        event_data = event['data']
+                        if 'result' in event_data:
+                            result_content = event_data['result']
+                            # Handle Zapier follow-up questions
+                            if isinstance(result_content, dict) and 'content' in result_content:
+                                content_list = result_content['content']
+                                if isinstance(content_list, list) and len(content_list) > 0:
+                                    first_content_item = content_list[0]
+                                    if isinstance(first_content_item, dict) and 'text' in first_content_item:
+                                        text_data = first_content_item['text']
+                                        try:
+                                            parsed_text_data = json.loads(text_data)
+                                            if isinstance(parsed_text_data, dict) and parsed_text_data.get('followUpQuestion'):
+                                                logger.warning(f"Zapier follow-up: {parsed_text_data['followUpQuestion']}")
+                                                return {
+                                                    "success": False,
+                                                    "error": f"Zapier needs more information: {parsed_text_data['followUpQuestion']}",
+                                                    "type": "clarification_needed_zapier"
+                                                }
+                                        except json.JSONDecodeError:
+                                            pass # Not a JSON follow-up
+                            return {"success": True, "data": result_content, "tool_used": tool_name_for_logging}
+                
+                logger.warning("Zapier call 200 OK but no 'result' in message events.")
+                return {"success": True, "data": call_events, "tool_used": tool_name_for_logging, "message": "Request processed, but no specific data result."}
+            else:
+                error_message = f"Tool call failed: {call_response.status_code} - {call_response.text}"
+                try:
+                    error_data = call_response.json()
+                    if error_data and 'error' in error_data and 'message' in error_data['error']:
+                        error_message = f"Zapier Error: {error_data['error']['message']}"
+                except json.JSONDecodeError:
+                    pass
+                logger.error(error_message)
+                return {"success": False, "error": error_message}
+
+        except requests.exceptions.Timeout:
+            logger.error("Zapier MCP request timed out")
+            return {"success": False, "error": "The request to Salesforce (via Zapier) timed out. Please try again."}
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Zapier MCP request error: {e}")
+            return {"success": False, "error": f"A connection error occurred with Salesforce (via Zapier): {str(e)}"}
         except Exception as e:
-            return {
-                "success": False,
-                "error": f"Request failed: {str(e)}"
-            }
+            logger.error(f"Unexpected error calling Zapier MCP: {e}", exc_info=True)
+            return {"success": False, "error": f"An unexpected error occurred: {str(e)}"}
     
     def parse_salesforce_data(self, data: Any) -> Dict[str, Any]:
         """Parse Salesforce data from various response formats."""
