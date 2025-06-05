@@ -1,0 +1,188 @@
+--------------------------------------------------------------------------
+COPY-PASTE BLOCK: Full Replit Setup for OpenAI -> Zapier MCP -> Salesforce
+--------------------------------------------------------------------------
+
+# ----------------------------------------------------------------------
+# Section 1: Instructions (Consider putting this in a README.md file)
+# ----------------------------------------------------------------------
+
+# Replit Project: OpenAI to Zapier MCP for Salesforce Interaction
+
+This project enables you to send natural language commands from a Python script
+in Replit to your Zapier MCP (Meta-Call Protocol) server. Zapier then
+interprets these commands and performs actions on your connected Salesforce account.
+
+## Setup Steps:
+
+### 1. Replit Secrets Configuration:
+   Navigate to the "Secrets" tab (look for a padlock icon on the left sidebar
+   in your Replit workspace). You **must** add the following secrets:
+
+   - Key: `OPENAI_API_KEY`
+     Value: Your_Actual_OpenAI_API_Key_Here
+
+   - Key: `ZAPIER_MCP_SERVER_URL`
+     Value: Your_Zapier_Provided_MCP_Server_URL
+     (Example from Zapier setup: `https://mcp.zapier.com/api/mcp/mcp` or a more specific one like `https://mcp.zapier.com/api/mcp/s/your-unique-id/mcp`)
+
+   - Key: `ZAPIER_MCP_API_KEY`
+     Value: Your_Zapier_Provided_MCP_API_Key_Bearer_Token
+     (This is the API Key/Bearer token shown in your Zapier MCP setup page for OpenAI)
+
+   **CRITICAL:** Replace the placeholder values (e.g., "Your_Actual_OpenAI_API_Key_Here")
+   with your actual credentials. The script will not work without these.
+
+### 2. Python Package Installation:
+   The `openai` library is required. The `pyproject.toml` file (Section 2 below)
+   is configured for Replit's Python (Poetry) environment. Replit should
+   automatically detect this and install the package when you paste the
+   `pyproject.toml` content.
+   If you encounter issues, or if your Replit uses `requirements.txt`, ensure
+   `openai` (version 1.0.0 or later) is listed. You can manually install via
+   the Replit Shell if needed: `pip install openai` or `poetry add openai`.
+
+### 3. Python Script (`main.py`):
+   Copy the Python code from Section 3 into your `main.py` file in Replit.
+   This script will prompt you for what action you want to perform in Salesforce.
+
+### 4. Running the Application:
+   - After setting secrets and ensuring `main.py` and `pyproject.toml` are populated,
+     click the main "Run" button at the top of the Replit interface.
+   - Alternatively, you can open the "Shell" tab and execute `python main.py`.
+   - The script will ask for your command to send to Salesforce via Zapier.
+
+### 5. Zapier MCP & Salesforce Configuration:
+   - This script assumes your Zapier account is already connected to your
+     Salesforce account.
+   - The effectiveness of your commands depends on the Salesforce actions Zapier
+     has exposed via its MCP interface (see `https://zapier.com/mcp/salesforce`
+     or similar documentation from Zapier) and how well Zapier's AI can
+     interpret your natural language `tool_input`.
+   - Experiment with phrasing for your `tool_input` to achieve the desired
+     Salesforce actions.
+
+# ----------------------------------------------------------------------
+# Section 2: Content for `pyproject.toml`
+# (Manages Python project dependencies in Replit with Poetry)
+# ----------------------------------------------------------------------
+
+[tool.poetry]
+name = "replit-openai-zapier-salesforce"
+version = "0.1.0"
+description = "Python script to call Zapier MCP (via OpenAI) for Salesforce actions, hosted on Replit."
+authors = ["Your Name <you@example.com>"] # Optional: Change to your details
+readme = "README.md" # Optional: if you create a README.md
+
+[tool.poetry.dependencies]
+python = ">=3.8" # Compatible Python version
+openai = "^1.0.0" # OpenAI library, ensure it's a recent version
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+# ----------------------------------------------------------------------
+# Section 3: Content for `main.py`
+# (The Python script that runs your application)
+# ----------------------------------------------------------------------
+
+import os
+from openai import OpenAI
+
+def run_salesforce_command_via_zapier_mcp():
+    """
+    Initializes clients, gets user input, calls OpenAI to interact with
+    Zapier's MCP for Salesforce, and prints the response.
+    """
+    try:
+        # Initialize the OpenAI client
+        # OPENAI_API_KEY is loaded automatically from Replit Secrets
+        client = OpenAI()
+    except Exception as e:
+        print(f"Error: Failed to initialize OpenAI client: {e}")
+        print("Ensure your OPENAI_API_KEY is correctly set in Replit Secrets.")
+        return
+
+    # Retrieve Zapier MCP details from Replit Secrets
+    zapier_mcp_url = os.getenv("ZAPIER_MCP_SERVER_URL")
+    zapier_mcp_api_key = os.getenv("ZAPIER_MCP_API_KEY")
+
+    if not zapier_mcp_url:
+        print("Error: ZAPIER_MCP_SERVER_URL is not set in Replit Secrets.")
+        print("Please check the 'Secrets' tab in your Replit workspace.")
+        return
+    if not zapier_mcp_api_key:
+        print("Error: ZAPIER_MCP_API_KEY is not set in Replit Secrets.")
+        print("Please check the 'Secrets' tab in your Replit workspace.")
+        return
+
+    # Get the desired Salesforce action from the user
+    print("\nWelcome to the Salesforce Command Center (via Zapier MCP)!")
+    print("----------------------------------------------------------")
+    print("Describe the action you want to perform in Salesforce.")
+    print("Examples:")
+    print("  - 'Find Salesforce contact with email team@example.com'")
+    print("  - 'Create a new Salesforce lead: Name Test Lead, Email test.lead@example.com, Company Test Inc.'")
+    print("  - 'Update Salesforce opportunity My Big Deal (ID 006000000000XYZ) stage to Closed Won'")
+    print("----------------------------------------------------------")
+    tool_input = input("> What would you like to do in Salesforce? ")
+
+    if not tool_input:
+        print("No command provided. Exiting.")
+        return
+
+    print(f"\nSending command to Zapier MCP (via OpenAI): '{tool_input}'")
+    print(f"Using Zapier MCP Server URL: {zapier_mcp_url}")
+
+    try:
+        response = client.responses.create(
+            model="gpt-4.1",  # Or "gpt-4-turbo", or another model you prefer that supports this API
+            input=tool_input,
+            tool_choice="required",
+            tools=[
+                {
+                    "type": "mcp",
+                    "server_label": "zapier_salesforce_connector", # A descriptive label
+                    "server_url": zapier_mcp_url,
+                    "require_approval": "never",  # Change to "always" for manual Zapier approval if desired
+                    "headers": {
+                        "Authorization": f"Bearer {zapier_mcp_api_key}",
+                    },
+                }
+            ],
+        )
+
+        print("\n--- Response from Zapier MCP (via OpenAI) ---")
+        # The structure of 'response' from client.responses.create can be complex.
+        # The actual useful output from the tool is often nested.
+        if hasattr(response, 'results') and response.results and len(response.results) > 0:
+            tool_result = response.results[0]
+            if hasattr(tool_result, 'outputs') and tool_result.outputs:
+                print("Tool Outputs:")
+                if isinstance(tool_result.outputs, dict):
+                    for key, value in tool_result.outputs.items():
+                        print(f"  {key}: {value}")
+                else:
+                    print(f"  {tool_result.outputs}")
+            else:
+                print("No 'outputs' field in tool result. Raw tool result:")
+                print(tool_result)
+        else:
+            print("No 'results' field in response, or results were empty. Raw response object:")
+            print(response)
+
+    except Exception as e:
+        print(f"\nAn API error occurred: {e}")
+        print("\nTroubleshooting suggestions:")
+        print("  - Verify all API keys and the Zapier MCP URL in Replit Secrets are correct.")
+        print("  - Ensure your OpenAI account has sufficient credits/quota.")
+        print("  - Check that the Zapier MCP integration for Salesforce is active and correctly set up in your Zapier account.")
+        print("  - The command you provided might not be understood by Zapier or may not correspond to a configured action.")
+        print("  - The OpenAI model might not support this specific API call or might be deprecated.")
+
+if __name__ == "__main__":
+    run_salesforce_command_via_zapier_mcp()
+
+--------------------------------------------------------------------------
+END OF COPY-PASTE BLOCK
+--------------------------------------------------------------------------
