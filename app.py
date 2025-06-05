@@ -94,6 +94,151 @@ class SalesforceWebAssistant:
         
         return events
     
+    def prepare_tool_arguments(self, action: str, selected_tool: Dict) -> Dict[str, Any]:
+        """Prepare specific arguments for Salesforce tools based on the action."""
+        action_lower = action.lower()
+        tool_name = selected_tool.get('name', '')
+        
+        # Extract search parameters from the action
+        search_params = self.extract_search_parameters(action_lower)
+        
+        # Default arguments
+        args = {
+            "instructions": action
+        }
+        
+        # Add specific parameters based on tool requirements
+        if 'find_record' in tool_name:
+            if search_params['object_type']:
+                args['object'] = search_params['object_type']
+            
+            if search_params['search_field'] and search_params['search_value']:
+                args['searchField'] = search_params['search_field']
+                args['searchValue'] = search_params['search_value']
+                # Use 'contains' for partial matches, 'equals' for exact matches
+                if 'zapier' in action_lower or 'contains' in action_lower or 'with' in action_lower:
+                    args['operator'] = 'contains'
+                else:
+                    args['operator'] = 'equals'
+            
+            # Add second search field if available
+            if search_params['search_field2'] and search_params['search_value2']:
+                args['searchField2'] = search_params['search_field2']
+                args['searchValue2'] = search_params['search_value2']
+        
+        elif 'by_query' in tool_name:
+            if search_params['object_type']:
+                args['object'] = search_params['object_type']
+            
+            # Build SOQL query
+            if search_params['search_field'] and search_params['search_value']:
+                query = f"SELECT Id, Name FROM {search_params['object_type']} WHERE {search_params['search_field']} LIKE '%{search_params['search_value']}%'"
+                args['query'] = query
+        
+        return args
+    
+    def extract_search_parameters(self, action: str) -> Dict[str, str]:
+        """Extract search parameters from natural language action."""
+        import re
+        
+        # Determine object type
+        object_type = 'Account'  # default
+        if any(word in action for word in ['contact', 'person', 'people']):
+            object_type = 'Contact'
+        elif any(word in action for word in ['account', 'company', 'organization']):
+            object_type = 'Account'
+        elif any(word in action for word in ['opportunity', 'deal', 'sale']):
+            object_type = 'Opportunity'
+        elif any(word in action for word in ['lead', 'prospect']):
+            object_type = 'Lead'
+        
+        # Extract search field and value
+        search_field = None
+        search_value = None
+        search_field2 = None
+        search_value2 = None
+        
+        # Email search - improved pattern
+        email_match = re.search(r'email[:\s]*([^\s]+@[^\s]+)', action, re.IGNORECASE)
+        if email_match:
+            search_field = 'Email'
+            search_value = email_match.group(1)
+        
+        # Specific name searches
+        elif 'zapier' in action.lower():
+            search_field = 'Name'
+            search_value = 'Zapier'
+        
+        # Name search
+        elif 'name' in action:
+            name_patterns = [
+                r'name[:\s]+(["\']([^"\']+)["\'])',  # quoted name
+                r'name[:\s]+(\w+(?:\s+\w+)*)',       # unquoted name
+                r'with.*name[:\s]+(["\']([^"\']+)["\'])',
+                r'called[:\s]+(["\']([^"\']+)["\'])',
+                r'called[:\s]+(\w+(?:\s+\w+)*)'
+            ]
+            
+            for pattern in name_patterns:
+                match = re.search(pattern, action, re.IGNORECASE)
+                if match:
+                    search_field = 'Name'
+                    search_value = match.group(2) if len(match.groups()) > 1 and match.group(2) else match.group(1)
+                    search_value = search_value.strip('\'"')
+                    break
+        
+        # Company/Account search
+        elif any(word in action for word in ['at ', 'company ', 'account ']):
+            company_patterns = [
+                r'at\s+(["\']([^"\']+)["\'])',
+                r'at\s+(\w+(?:\s+\w+)*)',
+                r'company[:\s]+(["\']([^"\']+)["\'])',
+                r'company[:\s]+(\w+(?:\s+\w+)*)',
+                r'account[:\s]+(["\']([^"\']+)["\'])',
+                r'account[:\s]+(\w+(?:\s+\w+)*)'
+            ]
+            
+            for pattern in company_patterns:
+                match = re.search(pattern, action, re.IGNORECASE)
+                if match:
+                    if object_type == 'Contact':
+                        search_field = 'Account.Name'
+                    else:
+                        search_field = 'Name'
+                    search_value = match.group(2) if len(match.groups()) > 1 and match.group(2) else match.group(1)
+                    search_value = search_value.strip('\'"')
+                    break
+        
+        # Generic "with" search
+        elif 'with' in action:
+            # Extract anything after "with"
+            with_match = re.search(r'with\s+(.+)', action, re.IGNORECASE)
+            if with_match:
+                search_field = 'Name'
+                search_value = with_match.group(1).strip()
+        
+        # If no specific field found, try to extract any quoted text or last words
+        if not search_field and not search_value:
+            # Look for quoted text
+            quote_match = re.search(r'["\']([^"\']+)["\']', action)
+            if quote_match:
+                search_field = 'Name'
+                search_value = quote_match.group(1)
+            else:
+                # Extract last meaningful words
+                words = action.split()
+                if len(words) >= 2:
+                    search_field = 'Name'
+                    search_value = ' '.join(words[-2:])
+        
+        return {
+            'object_type': object_type,
+            'search_field': search_field,
+            'search_value': search_value,
+            'search_field2': search_field2,
+            'search_value2': search_value2
+        }
+    
     def select_tool(self, action: str, available_tools: List[Dict]) -> Optional[Dict]:
         """Select the most appropriate tool for the given action."""
         action_lower = action.lower()
@@ -158,16 +303,16 @@ class SalesforceWebAssistant:
                     selected_tool = self.select_tool(action, available_tools)
                     
                     if selected_tool:
-                        # Call the selected tool
+                        # Call the selected tool with better parameters
+                        tool_args = self.prepare_tool_arguments(action, selected_tool)
+                        
                         call_payload = {
                             "jsonrpc": "2.0",
                             "id": 2,
                             "method": "tools/call",
                             "params": {
                                 "name": selected_tool['name'],
-                                "arguments": {
-                                    "instructions": action
-                                }
+                                "arguments": tool_args
                             }
                         }
                         
@@ -176,14 +321,46 @@ class SalesforceWebAssistant:
                         if call_response.status_code == 200:
                             call_events = self.parse_sse_response(call_response.text)
                             
-                            # Extract result
+                            # Extract result and handle various response formats
                             for event in call_events:
                                 if event.get('type') == 'message' and isinstance(event.get('data'), dict):
                                     event_data = event['data']
                                     if 'result' in event_data:
+                                        result = event_data['result']
+                                        # Check if result contains actual data or follow-up questions
+                                        if isinstance(result, dict) and 'content' in result:
+                                            content = result['content']
+                                            if isinstance(content, list) and len(content) > 0:
+                                                first_content = content[0]
+                                                if isinstance(first_content, dict) and 'text' in first_content:
+                                                    text_content = first_content['text']
+                                                    # Try to parse as JSON if it looks like JSON
+                                                    try:
+                                                        parsed_content = json.loads(text_content)
+                                                        if 'followUpQuestion' in parsed_content:
+                                                            # Handle follow-up questions by providing a default response
+                                                            logger.info(f"Received follow-up question: {parsed_content['followUpQuestion']}")
+                                                            return {
+                                                                "success": False,
+                                                                "error": f"Zapier requires more specific parameters. {parsed_content['followUpQuestion']}"
+                                                            }
+                                                        else:
+                                                            return {
+                                                                "success": True,
+                                                                "data": parsed_content,
+                                                                "tool_used": selected_tool['name']
+                                                            }
+                                                    except json.JSONDecodeError:
+                                                        # Return text content as is
+                                                        return {
+                                                            "success": True,
+                                                            "data": text_content,
+                                                            "tool_used": selected_tool['name']
+                                                        }
+                                        
                                         return {
                                             "success": True,
-                                            "data": event_data['result'],
+                                            "data": result,
                                             "tool_used": selected_tool['name']
                                         }
                             
