@@ -1,0 +1,828 @@
+The error message "Zapier requires more specific parameters. Question: The Account object does not have a 'LastName' field. Could you specify which Account field you want to filter by (e.g., Name)?" indicates that Zapier is attempting to query the `Account` object with the field `LastName`, which is incorrect for your query "find leads with the last name pace".
+
+This typically happens if the arguments passed to the Zapier tool are not correctly specifying the `Lead` object or if the query construction is leading Zapier to default to `Account`.
+
+Here's a plan to address this:
+
+1.  **Ensure Correct SOQL Generation**: The Natural Language Understanding (NLU) part of `get_optimized_zapier_input` should generate a SOQL query specifically for the `Lead` object, using the `LastName` field. For example:
+    `SELECT Id, Name, FirstName, LastName, Email, Phone, Company, Status FROM Lead WHERE LastName = 'pace' LIMIT 20`
+
+2.  **Refine `prepare_tool_arguments`**: This function needs to correctly package the arguments for Zapier's `Salesforce: Find Record(s) by Query` tool. It should:
+    * Extract the SOQL query from the NLU-generated instruction.
+    * Pass this SOQL query as the `query` argument to the Zapier tool.
+    * **Crucially**, it should also attempt to extract the Salesforce object (e.g., "Lead") from the SOQL query's `FROM` clause and pass this explicitly as an `object` argument to the Zapier tool. This helps prevent Zapier from defaulting to `Account` or getting confused.
+
+I'll provide the necessary modifications to the `SalesforceWebAssistant` class in your `app.py` file. Make sure you have `import re` at the top of your `app.py`.
+
+```python
+import os
+import json
+import logging
+import requests
+import re # <--- Ensure this import is present
+from datetime import datetime
+from typing import Dict, List, Optional, Any
+from flask import Flask, render_template, request, jsonify, send_file
+from openai import OpenAI
+import tempfile
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+app = Flask(__name__)
+
+# Configuration for primary fields display
+PRIMARY_CONTACT_FIELDS = ['Id', 'Name', 'FirstName', 'LastName', 'Email', 'Phone', 'MobilePhone', 'Title', 'AccountId']
+PRIMARY_ACCOUNT_FIELDS = ['Id', 'Name', 'Type', 'Industry', 'Phone', 'Website', 'BillingCity', 'BillingState']
+PRIMARY_OPPORTUNITY_FIELDS = ['Id', 'Name', 'StageName', 'Amount', 'CloseDate', 'AccountId', 'OwnerId']
+PRIMARY_LEAD_FIELDS = ['Id', 'Name', 'FirstName', 'LastName', 'Email', 'Phone', 'Company', 'Status']
+
+class SalesforceWebAssistant:
+    def __init__(self):
+        self.client = None
+        self.zapier_mcp_url = None
+        self.zapier_mcp_api_key = None
+        self.command_history = []
+        self.max_history = 10
+        
+        # Available Zapier Salesforce Tools for NLU reference
+        self.available_zapier_tools = [
+            "Salesforce: Find Record",
+            "Salesforce: Find Record(s)", 
+            "Salesforce: Find Record(s) by Query",
+            "Salesforce: Find Record by Query",
+            "Salesforce: Get Record Attachments",
+            "Salesforce: Add Contact to Campaign",
+            "Salesforce: Add Lead to Campaign", 
+            "Salesforce: Convert Lead to Contact",
+            "Salesforce: Create Child Records (with line item support)",
+            "Salesforce: Create Contact",
+            "Salesforce: Find Child Records",
+            "Salesforce: Create Lead",
+            "Salesforce: Create Note",
+            "Salesforce: Create Record",
+            "Salesforce: Create Record (UTC)",
+            "Salesforce: Send Email",
+            "Salesforce: Update Contact",
+            "Salesforce: Update Lead", 
+            "Salesforce: Update Record",
+            "Salesforce: Update Record (UTC)",
+            "Salesforce: API Request (Beta)"
+        ]
+        
+    def initialize_clients(self) -> bool:
+        """Initialize OpenAI client and Zapier MCP configuration."""
+        try:
+            self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+            self.zapier_mcp_url = os.getenv("ZAPIER_MCP_SERVER_URL")
+            self.zapier_mcp_api_key = os.getenv("ZAPIER_MCP_API_KEY")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to initialize clients: {e}")
+            return False
+    
+    def validate_environment(self) -> tuple[bool, List[str]]:
+        """Validate required environment variables."""
+        required_vars = ['OPENAI_API_KEY', 'ZAPIER_MCP_SERVER_URL', 'ZAPIER_MCP_API_KEY']
+        missing_vars = []
+        
+        for var in required_vars:
+            if not os.getenv(var):
+                missing_vars.append(var)
+        
+        return len(missing_vars) == 0, missing_vars
+    
+    def add_to_history(self, command: str):
+        """Add command to history, maintaining max size."""
+        if command and not command.startswith('/'):
+            self.command_history.append({
+                'command': command,
+                'timestamp': datetime.now().isoformat()
+            })
+            if len(self.command_history) > self.max_history:
+                self.command_history.pop(0)
+    
+    def get_optimized_zapier_input(self, raw_user_query: str, available_zapier_tools: List[str]) -> str:
+        """
+        NLU pre-processing function that implements two-stage SOQL strategy:
+        Stage 1: Generate SOQL query from user request
+        Stage 2: Construct Zapier instruction to use "Find Record(s) by Query" tool
+        """
+        logger.info(f"NLU Pre-processing raw query: {raw_user_query}")
+        try:
+            if not self.client:
+                logger.error("OpenAI client not initialized for NLU pre-processing")
+                return raw_user_query
+                
+            soql_system_prompt = """You are an AI assistant that translates raw, natural language user queries about Salesforce into valid SOQL (Salesforce Object Query Language) SELECT statements.
+
+Your goal is to construct a SOQL query that accurately reflects the user's request for finding information.
+
+Guidelines:
+1. Identify the main Salesforce Object (e.g., Account, Contact, Opportunity, Lead, Asset) for the FROM clause. Ensure it matches the user's explicit request (e.g., if they say 'leads', use 'Lead').
+2. Determine essential fields for the SELECT clause (always include Id, Name. For Accounts: Type, BillingCity, BillingState. For Contacts: Email, Phone, Title, AccountId. For Leads: FirstName, LastName, Email, Phone, Company, Status. For Assets: SerialNumber, AccountId, ContactId, Status. Add other fields if clearly implied by the user's query, like 'LastName' if the user asks for it).
+3. Construct the WHERE clause:
+   - For "equals" intents on text fields: `FieldName = 'SearchValue'`
+   - For "contains" intents on text fields: `FieldName LIKE '%SearchValue%'` (ensure wildcards '% %' are used).
+   - For specific fields like 'LastName', ensure you use 'LastName' and not just 'Name' if the user query indicates 'last name'.
+   - Handle simple AND/OR conditions if specified.
+4. Add `LIMIT` clauses: `LIMIT 1` for queries implying a unique record, `LIMIT 20` (or a reasonable default) for broader searches.
+5. Ensure `SearchValue` strings within the SOQL are properly escaped if they contain single quotes (e.g., "O'Malley" becomes "O\\'Malley").
+6. If the user query is too vague to construct a valid SOQL query, or if it's not a 'find' operation, return the specific string "ERROR:SOQL_GENERATION_FAILED".
+
+Examples:
+- User Query: "show me accounts with QA in name"
+  Generated SOQL: "SELECT Id, Name, Type, BillingCity, BillingState FROM Account WHERE Name LIKE '%QA%' LIMIT 20"
+
+- User Query: "contact email chris@alibre.com"
+  Generated SOQL: "SELECT Id, Name, Email, Phone, Title, AccountId FROM Contact WHERE Email = 'chris@alibre.com' LIMIT 1"
+
+- User Query: "find leads with the last name pace"
+  Generated SOQL: "SELECT Id, Name, FirstName, LastName, Email, Phone, Company, Status FROM Lead WHERE LastName = 'pace' LIMIT 20"
+
+Respond only with the SOQL query string or ERROR:SOQL_GENERATION_FAILED, nothing else."""
+
+            soql_response = self.client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {"role": "system", "content": soql_system_prompt},
+                    {"role": "user", "content": raw_user_query}
+                ],
+                max_tokens=300,
+                temperature=0.1
+            )
+            
+            generated_soql_string = ""
+            if soql_response.choices and soql_response.choices[0].message and soql_response.choices[0].message.content:
+                generated_soql_string = soql_response.choices[0].message.content.strip()
+            else:
+                logger.error("Invalid or empty response from SOQL generation LLM call")
+                return "Sorry, I encountered an issue processing your request for SOQL. Please try again."
+            
+            logger.info(f"NLU Stage 1 (SOQL Generation): Raw Query='{raw_user_query}' -> SOQL/Error='{generated_soql_string}'")
+            
+            if "ERROR:SOQL_GENERATION_FAILED" in generated_soql_string:
+                logger.warning(f"SOQL generation failed for query: {raw_user_query}")
+                return "Sorry, I could not translate your request into a Salesforce query. Please try rephrasing."
+            
+            if "SELECT" not in generated_soql_string.upper():
+                logger.error(f"NLU generated invalid SOQL (missing SELECT): {generated_soql_string}")
+                return "Sorry, I could not construct a valid Salesforce query. Please rephrase your request."
+            
+            final_zapier_instruction = f"Use Salesforce: Find Record(s) by Query with the SOQL query: '{generated_soql_string}'"
+            logger.info(f"NLU Stage 2 (Zapier Instruction Construction): SOQL='{generated_soql_string}' -> Zapier Instruction='{final_zapier_instruction}'")
+            
+            return final_zapier_instruction
+            
+        except Exception as e:
+            logger.error(f"NLU pre-processing (SOQL strategy) failed: {e}")
+            return raw_user_query
+    
+    def parse_sse_response(self, response_text: str) -> List[Dict]:
+        """Parse Server-Sent Events response from Zapier MCP."""
+        events = []
+        lines = response_text.strip().split('\n')
+        current_event = {}
+        
+        for line in lines:
+            line = line.strip()
+            if line.startswith('event:'):
+                if current_event:
+                    events.append(current_event)
+                current_event = {'type': line[6:].strip()}
+            elif line.startswith('data:'):
+                data = line[5:].strip()
+                if data:
+                    try:
+                        current_event['data'] = json.loads(data)
+                    except json.JSONDecodeError:
+                        current_event['data'] = data
+            elif line == '' and current_event:
+                events.append(current_event)
+                current_event = {}
+        
+        if current_event:
+            events.append(current_event)
+        
+        return events
+    
+    def prepare_tool_arguments(self, action: str, selected_tool: Dict) -> Dict[str, Any]:
+        action_lower = action.lower()
+        tool_name = selected_tool.get('name', '').lower()
+        
+        args: Dict[str, Any] = {}
+
+        # If NLU produced a specific "by Query" instruction for the SOQL tool
+        if tool_name == "salesforce: find record(s) by query" and \
+           "use salesforce: find record(s) by query with the soql query:" in action_lower:
+            
+            match_soql = re.search(r"soql query:\s*'(.*)'", action, re.IGNORECASE | re.DOTALL)
+            if match_soql:
+                actual_soql_query = match_soql.group(1)
+                args["query"] = actual_soql_query
+                
+                # Attempt to extract object from SOQL to pass explicitly to Zapier
+                match_from = re.search(r"FROM\s+(\w+)", actual_soql_query, re.IGNORECASE)
+                if match_from:
+                    object_from_soql = match_from.group(1)
+                    # Salesforce objects are typically TitleCase (e.g., Account, Contact, MyCustomObject__c)
+                    # Simple capitalization might not be robust for all object names but is a good start.
+                    object_for_zapier = object_from_soql[0].upper() + object_from_soql[1:]
+                    args["object"] = object_for_zapier
+                    logger.info(f"Extracted object '{object_for_zapier}' from SOQL for explicit Zapier arg.")
+                else:
+                    logger.warning(f"Could not extract object from SOQL: {actual_soql_query[:100]}...")
+
+                logger.info(f"Prepared args for '{tool_name}': {{'query': '{actual_soql_query[:100]}...', 'object': '{args.get('object')}'}}")
+            else:
+                logger.error(f"'{tool_name}' selected, but could not extract SOQL from: {action[:100]}...")
+                args["instructions"] = action # Fallback if SOQL extraction fails
+        
+        # For other 'find_record' tools (not 'by_query' and not a pre-formatted SOQL action)
+        elif 'find_record' in tool_name: # Catches "salesforce: find record", "salesforce: find record(s)"
+            args["instructions"] = action 
+            search_params = self.extract_search_parameters(action_lower) 
+            
+            if search_params.get('object_type'): args['object'] = search_params['object_type']
+            if search_params.get('search_field'): args['searchField'] = search_params['search_field']
+            if search_params.get('search_value'): args['searchValue'] = search_params['search_value']
+            
+            if 'contains' in action_lower or 'includes' in action_lower or 'has' in action_lower:
+                args['operator'] = 'contains'
+            else: 
+                args['operator'] = 'equals'
+
+            if search_params.get('search_field2') and search_params.get('search_value2'):
+                args['searchField2'] = search_params['search_field2']
+                args['searchValue2'] = search_params['search_value2']
+            logger.info(f"Prepared args for '{tool_name}': {args}")
+
+        else: # Default for any other tool
+            args["instructions"] = action
+            logger.info(f"Prepared default args for '{tool_name}': {args}")
+            
+        return args
+    
+    def extract_search_parameters(self, action: str) -> Dict[str, str]:
+        """Extract search parameters from natural language action."""
+        import re
+        
+        object_type = 'Account' 
+        action_lower = action.lower()
+        
+        if 'asset' in action_lower: object_type = 'Asset'
+        elif any(word in action_lower for word in ['contact', 'person', 'people']): object_type = 'Contact'
+        elif any(word in action_lower for word in ['account', 'company', 'organization']): object_type = 'Account'
+        elif any(word in action_lower for word in ['opportunity', 'deal', 'sale']): object_type = 'Opportunity'
+        elif any(word in action_lower for word in ['lead', 'prospect']): object_type = 'Lead'
+        
+        search_field = None
+        search_value = None
+        search_field2 = None
+        search_value2 = None
+        
+        email_match = re.search(r'email[:\s]*([^\s]+@[^\s]+)', action, re.IGNORECASE)
+        if email_match:
+            search_field = 'Email'
+            search_value = email_match.group(1)
+        
+        elif 'serial' in action_lower and 'number' in action_lower:
+            serial_match = re.search(r'(?:serial\s*number[:\s]*|serial[:\s]+)(\S+)', action, re.IGNORECASE) # Changed to \S+ for serial
+            if serial_match:
+                search_field = 'SerialNumber'
+                search_value = serial_match.group(1)
+        
+        elif 'last name' in action_lower or 'lastname' in action_lower:
+             # Try to get value after "last name"
+            ln_match = re.search(r'(?:last\s*name|lastname)[:\s]*(["\']?([^"\']+)["\']?)', action_lower)
+            if ln_match:
+                search_field = 'LastName'
+                search_value = ln_match.group(2).strip()
+
+
+        elif 'name' in action_lower: # Must be after more specific field extractions like "last name"
+            name_patterns = [
+                r'name[:\s]+(["\']([^"\']+)["\'])', 
+                r'name[:\s]+(\w+(?:\s+\w+)*)',       
+                r'with.*name[:\s]+(["\']([^"\']+)["\'])',
+                r'called[:\s]+(["\']([^"\']+)["\'])',
+                r'called[:\s]+(\w+(?:\s+\w+)*)'
+            ]
+            for pattern in name_patterns:
+                match = re.search(pattern, action, re.IGNORECASE)
+                if match:
+                    search_field = 'Name' # Default to 'Name' if not 'LastName'
+                    search_value = match.group(2) if len(match.groups()) > 1 and match.group(2) else match.group(1)
+                    search_value = search_value.strip('\'"')
+                    break
+        
+        elif any(word in action for word in ['at ', 'company ', 'account ']):
+            # This logic can be complex if not using SOQL. For SOQL, this function is less critical.
+            pass
+
+
+        if not search_field and not search_value:
+            quote_match = re.search(r'["\']([^"\']+)["\']', action)
+            if quote_match:
+                search_field = 'Name' 
+                search_value = quote_match.group(1)
+            else:
+                words = action.split()
+                # This simple fallback for search_value might not be very effective
+                # if len(words) >= 2 and not any(k in words[-2].lower() for k in ["query", "with", "the", "is", "by"]):
+                #    search_field = 'Name'
+                #    search_value = ' '.join(words[-2:])
+                # For "find leads with the last name pace", if LastName wasn't caught, this might pick "name pace" or "pace" for Name.
+                # Given SOQL strategy, this part of extract_search_parameters is less critical for 'by query' tools.
+                pass
+
+        return {
+            'object_type': object_type,
+            'search_field': search_field,
+            'search_value': search_value,
+            'search_field2': search_field2,
+            'search_value2': search_value2
+        }
+
+    def select_tool(self, action: str, available_tools: List[Dict]) -> Optional[Dict]:
+        action_lower = action.lower()
+        
+        # If the action is a pre-formatted SOQL instruction, prioritize the SOQL query tool
+        if "use salesforce: find record(s) by query with the soql query:" in action_lower:
+            for tool in available_tools:
+                if tool.get('name', '').lower() == "salesforce: find record(s) by query":
+                    return tool
+        
+        # General tool selection logic
+        if any(keyword in action_lower for keyword in ['find', 'search', 'get', 'show', 'list']):
+            priorities = ["salesforce: find record(s) by query", "salesforce: find record by query", "salesforce: find record(s)", "salesforce: find record"]
+        elif any(keyword in action_lower for keyword in ['create', 'add', 'new']):
+            priorities = ['salesforce_create_contact', 'salesforce_create_lead', 'salesforce_create_record']
+        elif any(keyword in action_lower for keyword in ['update', 'modify', 'change']):
+            priorities = ['salesforce_update_record', 'salesforce_update_contact', 'salesforce_update_lead']
+        else:
+            priorities = ["salesforce: find record(s)", "salesforce: find record", 'salesforce_create_record']
+        
+        for priority_name in priorities:
+            for tool in available_tools:
+                if tool.get('name', '').lower() == priority_name.lower():
+                    return tool
+        
+        # Fallback to first Salesforce tool if no priority match
+        for tool in available_tools:
+            if 'salesforce' in tool.get('name', '').lower():
+                return tool
+        
+        return available_tools[0] if available_tools else None
+
+    def call_zapier_mcp(self, action: str) -> Dict[str, Any]:
+        """Make request to Zapier MCP server."""
+        try:
+            headers = {
+                "Authorization": f"Bearer {self.zapier_mcp_api_key}",
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream" # Accept SSE
+            }
+            
+            # List tools (optional here if self.available_zapier_tools is pre-populated and static)
+            # For simplicity, assuming self.available_zapier_tools is adequate.
+            # If tools can change dynamically, a tools/list call might be needed each time or periodically.
+
+            selected_tool = self.select_tool(action, self.available_zapier_tools)
+            
+            if not selected_tool:
+                return {"success": False, "error": "No suitable Zapier tool found for this action."}
+
+            logger.info(f"Selected Zapier tool: {selected_tool.get('name')}")
+            tool_args = self.prepare_tool_arguments(action, selected_tool)
+            
+            call_payload = {
+                "jsonrpc": "2.0",
+                "id": str(datetime.now().timestamp()), # Unique ID for the call
+                "method": "tools/call",
+                "params": {
+                    "name": selected_tool['name'],
+                    "arguments": tool_args
+                }
+            }
+            
+            logger.info(f"Calling Zapier MCP with payload: {json.dumps(call_payload, indent=2)}")
+            call_response = requests.post(self.zapier_mcp_url, headers=headers, json=call_payload, timeout=60)
+            
+            if call_response.status_code == 200:
+                call_events = self.parse_sse_response(call_response.text)
+                logger.info(f"Received {len(call_events)} events from tool call.")
+                
+                # Process events to find the final result or follow-up questions
+                for event in reversed(call_events): # Often the most relevant data is towards the end
+                    if event.get('type') == 'message' and isinstance(event.get('data'), dict):
+                        event_data = event['data']
+                        if 'result' in event_data:
+                            result_content = event_data['result']
+                            # Check for follow-up questions, which often come in 'content' -> 'text' -> JSON
+                            if isinstance(result_content, dict) and 'content' in result_content:
+                                inner_content = result_content['content']
+                                if isinstance(inner_content, list) and len(inner_content) > 0:
+                                    text_data = inner_content[0].get('text') if isinstance(inner_content[0], dict) else None
+                                    if text_data:
+                                        try:
+                                            parsed_text_json = json.loads(text_data)
+                                            if 'followUpQuestion' in parsed_text_json:
+                                                logger.warning(f"Follow-up question from Zapier: {parsed_text_json['followUpQuestion']}")
+                                                return {
+                                                    "success": False,
+                                                    "error": f"Zapier requires more specific parameters. {parsed_text_json['followUpQuestion']}"
+                                                }
+                                            # If not a followUpQuestion, this parsed_text_json might be the actual data
+                                            return {"success": True, "data": parsed_text_json, "tool_used": selected_tool['name']}
+                                        except json.JSONDecodeError:
+                                            # If text isn't JSON, it might be a simple string response
+                                            return {"success": True, "data": text_data, "tool_used": selected_tool['name']}
+                            # If no follow-up question and not handled above, return the result_content
+                            return {"success": True, "data": result_content, "tool_used": selected_tool['name']}
+                        elif 'error' in event_data: # Handle explicit error messages from Zapier
+                             logger.error(f"Error from Zapier tool call: {event_data['error']}")
+                             return {"success": False, "error": f"Zapier tool error: {event_data['error'].get('message', 'Unknown error')}"}
+                
+                # If no specific result found in messages, return raw events or a generic message
+                return {"success": True, "data": call_events, "tool_used": selected_tool['name'], "message": "Tool call completed, review events for details."}
+            else:
+                logger.error(f"Tool call failed: {call_response.status_code} - {call_response.text[:500]}")
+                return {"success": False, "error": f"Tool call failed: {call_response.status_code} - {call_response.text[:200]}"}
+                
+        except requests.exceptions.Timeout:
+            logger.error("Request to Zapier MCP timed out.")
+            return {"success": False, "error": "Request to Zapier timed out."}
+        except Exception as e:
+            logger.error(f"Error calling Zapier MCP: {e}", exc_info=True)
+            return {"success": False, "error": f"Request failed: {str(e)}"}
+
+    # ... (rest of the SalesforceWebAssistant class: parse_salesforce_data, get_primary_fields, etc. remain unchanged)
+    def parse_salesforce_data(self, data: Any) -> Dict[str, Any]:
+        """Parse Salesforce data from various response formats."""
+        try:
+            if isinstance(data, str):
+                try:
+                    data = json.loads(data)
+                except json.JSONDecodeError:
+                     # If it's a simple string message, not JSON data
+                    return {"parsed": True, "results": [], "count": 0, "message": data}
+
+            results = []
+            
+            if isinstance(data, dict):
+                if 'results' in data and isinstance(data['results'], list):
+                    raw_results = data['results']
+                    # Filter out Zapier status records
+                    for res in raw_results:
+                        if isinstance(res, dict) and not ('_zap_search_was_found_status' in res and len(res) == 1):
+                            results.append(res)
+                elif 'records' in data and isinstance(data['records'], list): # Standard Salesforce API list
+                    results = data['records']
+                elif 'id' in data or 'Id' in data: # Single record result
+                    results = [data]
+                elif not data : # Empty dict
+                     pass # No results
+                else: # Unknown dict structure, assume it might be the data itself if results/records not found
+                    # This could be Zapier returning a simple success message or non-record data
+                    logger.info(f"Parsing non-standard dict as data: {str(data)[:200]}")
+                    # Heuristic: if it has common Salesforce fields, treat as a single record
+                    if any(k in data for k in ['Id', 'Name', 'Email', 'attributes']):
+                         results = [data]
+                    # else, it might be a message or other non-record data.
+                    # Let's not add it to results to avoid misinterpretation as a Salesforce record.
+
+            elif isinstance(data, list): # If data is already a list of records
+                results = data
+            
+            # If after all parsing, results is still not a list (e.g. simple string message)
+            if not isinstance(results, list):
+                logger.warning(f"Parsed data is not a list of records. Data: {str(results)[:200]}")
+                return {"parsed": True, "results": [], "count": 0, "message": str(results) if results else "No actionable data found."}
+
+
+            logger.info(f"Parsed {len(results)} Salesforce records from response.")
+            if not results and isinstance(data, dict) and not any(k in data for k in ['results', 'records']): # no actual records found
+                 return {"parsed": True, "results": [], "count": 0, "message": "No records found or action did not return records."}
+
+
+            return {
+                "parsed": True,
+                "results": results,
+                "count": len(results)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error parsing Salesforce data: {e}", exc_info=True)
+            return {"parsed": False, "error": str(e), "raw_data": str(data)[:500]}
+
+
+    def get_primary_fields(self, record: Dict) -> List[str]:
+        """Get primary fields list based on record type."""
+        record_type = self.detect_record_type(record)
+        
+        if record_type == 'Contact': return PRIMARY_CONTACT_FIELDS
+        elif record_type == 'Account': return PRIMARY_ACCOUNT_FIELDS
+        elif record_type == 'Opportunity': return PRIMARY_OPPORTUNITY_FIELDS
+        elif record_type == 'Lead': return PRIMARY_LEAD_FIELDS
+        else: return ['Id', 'Name', 'Email', 'Phone', 'Type', 'Status']
+    
+    def detect_record_type(self, record: Dict) -> str:
+        """Detect the type of Salesforce record."""
+        if not isinstance(record, dict): return 'Unknown'
+        if 'attributes' in record and isinstance(record['attributes'], dict) and 'type' in record['attributes']:
+            return record['attributes']['type']
+        if 'FirstName' in record or 'LastName' in record: return 'Contact'
+        if 'Industry' in record or 'BillingCity' in record: return 'Account'
+        if 'StageName' in record or 'Amount' in record: return 'Opportunity'
+        if 'Company' in record and 'Status' in record and 'LastName' in record: return 'Lead' # Leads also have LastName
+        return 'Unknown'
+
+    def format_record_for_display(self, record: Dict, show_all: bool = False) -> Dict[str, Any]:
+        """Format a record for web display."""
+        record_type = self.detect_record_type(record)
+        record_name = record.get('Name') or f"{record.get('FirstName', '')} {record.get('LastName', '')}".strip() or record.get('Id', 'Unknown Record')
+        
+        primary_fields_list = self.get_primary_fields(record)
+        displayed_fields = set()
+        primary_data, additional_data = [], []
+
+        for field in primary_fields_list:
+            if field in record and record[field] is not None and record[field] != '':
+                primary_data.append({'field': self.format_field_name(field), 'value': str(record[field])})
+                displayed_fields.add(field)
+        
+        if show_all:
+            for field, value in record.items():
+                if field not in displayed_fields and value is not None and value != '' and not field.startswith('_') and field != 'attributes':
+                    additional_data.append({'field': self.format_field_name(field), 'value': str(value)})
+        
+        return {
+            'record_type': record_type, 'record_name': record_name, 'record_id': record.get('Id', ''),
+            'primary_data': primary_data, 'additional_data': additional_data, 'raw_record': record
+        }
+
+    def format_field_name(self, field: str) -> str:
+        """Format field names for better display."""
+        field_mappings = {
+            'Id': 'Salesforce ID', 'FirstName': 'First Name', 'LastName': 'Last Name', 
+            'Email': 'Email Address', 'Phone': 'Phone', 'MobilePhone': 'Mobile Phone',
+            'AccountId': 'Account ID', 'BillingCity': 'Billing City', 'BillingState': 'Billing State',
+            'StageName': 'Stage', 'CloseDate': 'Close Date', 'OwnerId': 'Owner ID'
+            # Add more mappings as needed
+        }
+        # Simple spaced title case for unmapped fields
+        return field_mappings.get(field, ' '.join(re.findall(r'[A-Z]?[a-z]+|[A-Z]+(?=[A-Z][a-z]|\d|\W|$)|^\d+', field)).title())
+
+
+    def get_follow_up_actions(self, record: Dict) -> List[Dict[str, str]]:
+        """Get contextual follow-up actions based on record type."""
+        record_type = self.detect_record_type(record)
+        record_name = record.get('Name') or f"{record.get('FirstName', '')} {record.get('LastName', '')}".strip() or "this record"
+        
+        actions = []
+        if record_type == 'Contact':
+            actions = [
+                {'id': 'log_call', 'label': f'Log a call for {record_name}'},
+                {'id': 'create_task', 'label': f'Create task for {record_name}'},
+                {'id': 'view_account', 'label': 'View linked Account'}
+            ]
+        elif record_type == 'Account':
+            actions = [
+                {'id': 'find_contacts', 'label': f'Find contacts at {record_name}'},
+                {'id': 'view_opportunities', 'label': f'View opportunities for {record_name}'},
+                {'id': 'log_activity', 'label': f'Log activity for {record_name}'}
+            ]
+        # Add more types and actions
+        else:
+            actions = [{'id': 'create_task', 'label': 'Create a related task'}]
+        
+        actions.append({'id': 'update_record', 'label': f'Update {record_name}'})
+        return actions
+
+assistant = SalesforceWebAssistant() # Initialize assistant globally
+
+# (Flask routes: index, send_command, get_record_details, etc. remain mostly unchanged but will use the modified assistant methods)
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@app.route('/api/send_command', methods=['POST'])
+def send_command():
+    data = request.get_json()
+    command = data.get('command', '').strip()
+    
+    if not command:
+        return jsonify({'success': False, 'error': 'No command provided'})
+    
+    env_valid, missing_vars = assistant.validate_environment()
+    if not env_valid:
+        return jsonify({'success': False, 'error': f'Missing environment variables: {", ".join(missing_vars)}'})
+    
+    if not assistant.client and not assistant.initialize_clients(): # Initialize if not already
+        return jsonify({'success': False, 'error': 'Failed to initialize API clients'})
+            
+    assistant.add_to_history(command)
+    logger.info(f"Processing raw query from web: {command}")
+    optimized_command = assistant.get_optimized_zapier_input(command, assistant.available_zapier_tools)
+    
+    logger.info(f"NLU Transform for web: '{command}' → '{optimized_command}'")
+    
+    if any(err_msg in optimized_command for err_msg in ["Sorry, I could not translate", "ERROR:SOQL_GENERATION_FAILED", "Sorry, I encountered an issue", "Sorry, I could not construct"]):
+        return jsonify({'success': False, 'error': optimized_command, 'type': 'nlu_error'})
+            
+    requires_confirmation = any(keyword in optimized_command.lower() for keyword in ['create', 'update', 'delete', 'log', 'convert'])
+    if requires_confirmation and not data.get('confirmed', False):
+        return jsonify({
+            'success': True, 'requires_confirmation': True, 'command': command, 
+            'optimized_command': optimized_command, 
+            'message': f"You're about to: '{optimized_command}'. Confirm?"
+        })
+
+    logger.info(f"Sending to Zapier (from web): {optimized_command}")
+    result = assistant.call_zapier_mcp(optimized_command)
+    
+    if result['success']:
+        parsed_data = assistant.parse_salesforce_data(result.get('data'))
+        
+        if parsed_data.get('parsed', False):
+            results_list = parsed_data.get('results', [])
+            count = parsed_data.get('count', 0)
+            message_from_parser = parsed_data.get('message', '')
+
+            if count == 0:
+                return jsonify({
+                    'success': True, 'type': 'no_results', 
+                    'message': message_from_parser or f'No records found for: "{command}".',
+                    'suggestion': 'Try rephrasing or broadening your search.'
+                })
+            elif count == 1:
+                record = results_list[0]
+                formatted_record = assistant.format_record_for_display(record)
+                follow_ups = assistant.get_follow_up_actions(record)
+                return jsonify({
+                    'success': True, 'type': 'single_record', 'record': formatted_record, 
+                    'follow_ups': follow_ups, 'message': f"Found: {formatted_record['record_name']}"
+                })
+            else: # Multiple records
+                record_summaries = [{
+                    'index': i, 'name': r.get('Name', f"{r.get('FirstName', '')} {r.get('LastName', '')}".strip() or r.get('Id')),
+                    'email': r.get('Email', ''), 'id': r.get('Id', ''),
+                    'display': (r.get('Name') or f"{r.get('FirstName', '')} {r.get('LastName', '')}".strip() or r.get('Id', 'Unknown')) + (f" ({r.get('Email')})" if r.get('Email') else "")
+                } for i, r in enumerate(results_list)]
+                
+                # Infer object type for the list display
+                obj_type_guess = assistant.detect_record_type(results_list[0]) if results_list else "records"
+
+                return jsonify({
+                    'success': True, 'type': 'multiple_records', 'records': record_summaries, 
+                    'count': count, 'object_type': obj_type_guess, 
+                    'message': f"Found {count} {obj_type_guess.lower()} records"
+                })
+        else: # Not parsed successfully, could be raw data or error from parser
+             return jsonify({
+                'success': True, 'type': 'raw_response', 
+                'message': 'Received a response from Salesforce.', 
+                'data': parsed_data.get('raw_data', 'No specific data extracted. ') + (parsed_data.get('error', ''))
+            })
+    else: # Zapier call failed
+        return jsonify({'success': False, 'error': result.get('error', 'Unknown error from Zapier')})
+
+@app.route('/api/get_record_details', methods=['POST'])
+def get_record_details():
+    data = request.get_json()
+    record_id = data.get('record_id')
+    record_type = data.get('record_type', 'Record') # Default type if not provided
+
+    if not record_id:
+        return jsonify({'success': False, 'error': 'Record ID not provided'})
+    if not record_type : # Ensure record_type is somewhat sensible
+         logger.warning("Record type not provided to /api/get_record_details, attempting to infer or use default.")
+         # Attempt to infer if needed, or use a generic term if it's truly unknown
+         # For now, we will rely on the frontend sending a reasonable default like 'Asset' or what it got from the list view.
+
+    # Construct a very specific command to fetch by ID.
+    # NLU should handle this to make a precise SOQL.
+    specific_command = f"Find {record_type} with Id {record_id}" 
+    logger.info(f"Executing specific command for get_record_details: {specific_command}")
+
+    # Initialize clients if not already (important if assistant is per-request or might lose state)
+    if not assistant.client and not assistant.initialize_clients():
+        return jsonify({'success': False, 'error': 'Failed to initialize API clients for get_record_details'})
+
+    optimized_command = assistant.get_optimized_zapier_input(specific_command, assistant.available_zapier_tools)
+    logger.info(f"Optimized command for get_record_details: {optimized_command}")
+    
+    result = assistant.call_zapier_mcp(optimized_command)
+
+    if result.get('success'):
+        parsed_data = assistant.parse_salesforce_data(result.get('data'))
+        if parsed_data.get('parsed') and parsed_data.get('results') and parsed_data.get('count', 0) > 0:
+            record_detail = parsed_data['results'][0] # Assuming ID search returns one item
+            formatted_record = assistant.format_record_for_display(record_detail, show_all=True) # Show all details
+            follow_ups = assistant.get_follow_up_actions(record_detail)
+            return jsonify({'success': True, 'record': formatted_record, 'follow_ups': follow_ups})
+        else:
+            error_msg = f"Could not retrieve details for {record_type} ID {record_id}."
+            if result.get('data'): error_msg += f" Zapier Raw: {str(result.get('data'))[:200]}"
+            if parsed_data.get('error'): error_msg += f" Parser Error: {parsed_data.get('error')}"
+            logger.warning(error_msg)
+            return jsonify({'success': False, 'error': error_msg})
+    else:
+        logger.error(f"Zapier call failed for '{specific_command}': {result.get('error')}")
+        return jsonify({'success': False, 'error': result.get('error', 'Failed to fetch details via Zapier')})
+
+@app.route('/api/show_more_details', methods=['POST']) # This seems redundant if get_record_details shows all
+def show_more_details():
+    data = request.get_json()
+    record_data = data.get('record') # Expects the 'raw_record' part
+    if not record_data or not record_data.get('raw_record'):
+        return jsonify({'success': False, 'error': 'Record data not provided'})
+    
+    # Re-format with show_all=True. Frontend should ideally call get_record_details for full info.
+    # This endpoint is kept for compatibility if frontend uses it.
+    formatted_record = assistant.format_record_for_display(record_data['raw_record'], show_all=True)
+    return jsonify({'success': True, 'additional_data': formatted_record['additional_data']})
+
+@app.route('/api/get_history', methods=['GET'])
+def get_history():
+    return jsonify({'success': True, 'history': assistant.command_history})
+
+@app.route('/api/save_record', methods=['POST'])
+def save_record():
+    data = request.get_json()
+    record_to_save = data.get('record') # This is the formatted record from the client
+    filename_base = data.get('filename', 'salesforce_record').replace('.txt', '')
+
+    if not record_to_save:
+        return jsonify({'success': False, 'error': 'Record data not provided for saving.'})
+
+    content = f"Salesforce Record Export: {record_to_save.get('record_name', 'N/A')}\n"
+    content += f"Type: {record_to_save.get('record_type', 'N/A')}, ID: {record_to_save.get('record_id', 'N/A')}\n"
+    content += f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+    content += "="*50 + "\n\nPrimary Information:\n"
+    for item in record_to_save.get('primary_data', []):
+        content += f"- {item['field']}: {item['value']}\n"
+    
+    if record_to_save.get('additional_data'):
+        content += "\nAdditional Details:\n"
+        for item in record_to_save.get('additional_data', []):
+            content += f"- {item['field']}: {item['value']}\n"
+    
+    try:
+        # Ensure temp directory exists (though gettempdir() usually points to an existing one)
+        temp_dir = tempfile.gettempdir()
+        # Sanitize filename
+        safe_filename_base = "".join(c for c in filename_base if c.isalnum() or c in (' ', '.', '_')).rstrip()
+        final_filename = f"{safe_filename_base}_{datetime.now().strftime('%Y%m%d%H%M%S')}.txt"
+        
+        temp_file_path = os.path.join(temp_dir, os.path.basename(final_filename)) # Use basename for safety
+
+        with open(temp_file_path, 'w', encoding='utf-8') as temp_f:
+            temp_f.write(content)
+        
+        logger.info(f"Record saved to temporary file: {temp_file_path}")
+        return jsonify({
+            'success': True, 
+            'download_url': f'/api/download_file/{os.path.basename(temp_file_path)}', # Send only basename
+            'filename': os.path.basename(final_filename) # Send the actual filename for download
+        })
+    except Exception as e:
+        logger.error(f"Error saving record to file: {e}", exc_info=True)
+        return jsonify({'success': False, 'error': f'Error saving file: {str(e)}'})
+
+
+@app.route('/api/download_file/<filename>')
+def download_file(filename):
+    # Security: Sanitize filename to prevent directory traversal.
+    # os.path.basename will return only the final component of the path.
+    safe_filename = os.path.basename(filename)
+    temp_path = os.path.join(tempfile.gettempdir(), safe_filename)
+    
+    if os.path.exists(temp_path):
+        try:
+            return send_file(temp_path, as_attachment=True, download_name=safe_filename)
+        except Exception as e:
+            logger.error(f"Error sending file {safe_filename}: {e}", exc_info=True)
+            return jsonify({'success': False, 'error': 'Could not send file.'}), 500
+        finally:
+            # Optionally, remove the file after download attempt if it's truly temporary
+            # Be cautious with auto-removal if multiple users or retries are expected.
+            # For now, let's leave it for manual cleanup or OS temp cleanup.
+            # if os.path.exists(temp_path):
+            #     os.remove(temp_path)
+            pass
+    else:
+        logger.warning(f"Download request for non-existent file: {safe_filename} (Full path checked: {temp_path})")
+        return jsonify({'success': False, 'error': 'File not found or access denied.'}), 404
+
+
+if __name__ == '__main__':
+    # Ensure client is initialized when app starts if assistant is global
+    if not assistant.client:
+         assistant.initialize_clients()
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False) # debug=False for production
+
+```
+These changes should improve how your application handles SOQL queries via Zapier and specifically address the "Account object" error when querying leads by last name. Remember to thoroughly test with various queries.

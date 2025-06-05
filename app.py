@@ -208,10 +208,35 @@ Respond only with the SOQL query string or ERROR:SOQL_GENERATION_FAILED, nothing
     
     def prepare_tool_arguments(self, action: str, selected_tool: Dict) -> Dict[str, Any]:
         """Prepare specific arguments for Salesforce tools based on the action."""
-        action_lower = action.lower()
-        tool_name = selected_tool.get('name', '')
+        import re
         
-        # Extract search parameters from the action
+        action_lower = action.lower()
+        tool_name = selected_tool.get('name', '').lower()
+        
+        args = {}
+        
+        # Handle NLU-generated SOQL instructions for "Find Record(s) by Query" tool
+        if tool_name == "salesforce: find record(s) by query" and \
+           "use salesforce: find record(s) by query with the soql query:" in action_lower:
+            
+            # Extract SOQL query from the NLU instruction
+            match_soql = re.search(r"soql query:\s*'(.*)'", action, re.IGNORECASE | re.DOTALL)
+            if match_soql:
+                actual_soql_query = match_soql.group(1)
+                args["query"] = actual_soql_query
+                
+                # Extract object type from SOQL FROM clause
+                match_from = re.search(r"FROM\s+(\w+)", actual_soql_query, re.IGNORECASE)
+                if match_from:
+                    object_from_soql = match_from.group(1)
+                    # Ensure proper capitalization for Salesforce objects
+                    object_for_zapier = object_from_soql.capitalize()
+                    args["object"] = object_for_zapier
+                    logger.info(f"Extracted object '{object_for_zapier}' from SOQL: {actual_soql_query}")
+                
+                return args
+        
+        # Fallback to legacy parameter extraction for other cases
         search_params = self.extract_search_parameters(action_lower)
         
         # Default arguments
