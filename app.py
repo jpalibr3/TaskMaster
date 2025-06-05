@@ -119,27 +119,29 @@ Guidelines for optimization:
 
 CRITICAL: Your output MUST be a simple, natural language string that helps Zapier correctly parse the search parameters. If the user query is ambiguous or lacks detail, formulate a reasonable search instruction for Zapier.
 
-For partial/contains searches (when user says "with X in name", "having X", etc.):
-- Use broader search terms that encourage Zapier to use contains logic
-- Pattern: "Show me [Object] records with [Value] in the [Field]"
-- Pattern: "Find [Object] records containing [Value]"
-
-For exact lookups (specific names, emails, IDs):
+For EQUALS/direct lookups (specific names, emails, IDs):
 - Pattern: "Find [Object] [field]: [Value]"
+- Pattern: "Find [Object] with the [field] [Value]"
+
+For CONTAINS searches (when user says "with X in name", "having X", etc.):
+- Pattern for name searches: "Show me [object_plural] with the name [Value] in the [object_singular] name"
+- Pattern for other fields: "Show me [object_plural] with [Value] in the [Field Name]"
+
+CRITICAL: Use the exact phrasing patterns that Zapier has shown it can parse correctly. For contains searches on names, replicate the structure: "Show me accounts with the name [value] in the account name"
 
 Template Guidelines:
-- Use natural, human-like phrasing
-- For partial searches, use phrasing that encourages Zapier to use contains logic
-- Use plural forms (records, accounts, contacts) for multiple results
+- Use the simplest possible phrasing for Zapier
+- For contains searches on names, use the proven pattern exactly
+- For exact matches, use the colon format: "Find [Object] [field]: [Value]"
 - Map user terms to proper field names (name → Account Name, email → Email)
 - If you cannot confidently create a valid instruction, return: ERROR:NLU_CONFUSION
 
 Examples:
 - Raw: "show me accounts with QA in the name" 
-  → Optimized: "Show me Account records with QA in the Account Name"
+  → Optimized: "Show me accounts with the name QA in the account name"
 
 - Raw: "find john smith contact"
-  → Optimized: "Show me Contact records with John Smith in the Name"
+  → Optimized: "Show me contacts with the name John Smith in the contact name"
 
 - Raw: "account QA TESTING" (exact match)
   → Optimized: "Find Account name: QA TESTING"

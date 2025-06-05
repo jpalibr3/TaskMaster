@@ -1,0 +1,86 @@
+You're right to push on this – "going in loops" is frustrating, and it means we haven't quite hit the bullseye for how Zapier's MCP robustly parses instructions, especially for "contains" searches.
+
+The latest screenshot (image_1953a6.png) is another clear example:
+
+NLU's Instruction to Zapier: "Show me Account records with QA in the Account Name"
+Zapier's Parsed searchValue: account name (Incorrect)
+It seems Zapier's parser is getting tripped up by the phrase "in the Account Name" and is taking "account name" as the value, rather than "QA".
+
+Thinking Hard to Avoid Loops – The Core Insight:
+
+The most critical observation comes from comparing your successful parameter parsing instances with the failing ones.
+
+Successful parameter parsing for a "contains" like intent (from your earlier PDF, image_1a4f87.png):
+
+User's original flexible input to your system: "show me accounts with the name zapier in the account name"
+Zapier's internal parsing of this:
+object: Account
+operator: contains
+searchValue: Zapier (Correct!)
+Field to Search: Account Name (Name)
+(Even though _zap_search_was_found_status was false in that specific instance, the parameter parsing by Zapier for that phrasing was good.)
+Successful explicit query & result:
+
+Your input: "Find account name: QA TESTING"
+Zapier parsed operator: equals (likely default), searchValue: qa testing.
+The pattern that Zapier seems to struggle with is when your NLU constructs a sentence that includes the word "contains" and then tries to specify the field and value. Zapier seems to either grab "contains" as the value, or the field name as the value.
+
+The Strategy to Break the Loop: Make the NLU Replicate Simpler, Proven Input Patterns for Zapier.
+
+Instead of your NLU trying to form "grammatically helpful" sentences for Zapier that explicitly state the operator, let's instruct the NLU to generate an input string that is structurally identical to the types of queries where Zapier has previously shown it can correctly identify the searchValue, object, and field, and infer the operator or pick it up correctly.
+
+Revised "Ultimate Prompt" (Revision 4) for the Replit Agent:
+This prompt will hyper-focus the NLU pre-processor on generating very specific output strings for Zapier, especially for "contains" style searches, by mimicking structures that Zapier has shown it can deconstruct better.
+
+COPY-PASTE THIS ENTIRE BLOCK TO REPLIT AGENT:
+"Hello Replit Agent,
+
+We are making a highly targeted refinement to the NLU pre-processing layer in my Python web application to resolve a persistent issue with how Zapier MCP parses the searchValue.
+
+Reference Problem (from user-provided image image_1953a6.png and previous logs):
+When the NLU generates seemingly clear natural language for Zapier, like "Show me Account records with QA in the Account Name", Zapier MCP incorrectly parses the searchValue (e.g., taking "account name" or "contains" as the value, instead of "QA"). This loop of refining the NLU output sentence structure needs a more definitive solution.
+
+New Core Strategy: The NLU Pre-processor MUST generate input strings for Zapier that strictly adhere to simple, direct phrasing patterns that Zapier has historically parsed correctly for its parameters (object, operator, fieldToSearch, searchValue). The goal is to eliminate Zapier's confusion when extracting the searchValue.
+
+Detailed Requirements for Modifying the NLU Pre-processor (get_optimized_zapier_input function in Python backend):
+
+NLU Analysis (Core Task Remains):
+
+The NLU model (e.g., GPT-4 via client.chat.completions.create) must still analyze the raw user query to determine: intent, Salesforce Object, field(s), search value(s), and intended operator. It also needs to anticipate if single or multiple results are expected to help guide Zapier's internal tool choice (e.g., "Find Record" vs. "Find Record(s)").
+CRITICAL - New Output Format for NLU-Generated input String (to be sent to Zapier):
+
+The NLU model must be instructed to generate its output string for Zapier using the simplest possible phrasings that Zapier has shown it can handle for parameter extraction.
+A. For "EQUALS" or direct lookups (mimicking your historically successful explicit patterns):
+Pattern 1 (Field name as part of the command): Find [Salesforce Object (singular)] [common field alias like 'name' or 'email']: [Search Value]
+Example: Raw User Query: "account QA TESTING" -> NLU Output for Zapier: "Find Account name: QA TESTING"
+Example: Raw User Query: "contact with email chris@alibre.com" -> NLU Output for Zapier: "Find Contact email: chris@alibre.com"
+(This pattern seems to make Zapier default to an 'equals' operator and correctly identify the value.)
+B. For "CONTAINS" searches (NEW, SIMPLIFIED & MIMICKING APPROACH):
+Based on logs where Zapier correctly parsed parameters for a "contains" intent from a more natural user query ("show me accounts with the name zapier in the account name" resulted in correct parameters: object=Account, operator=contains, searchValue=Zapier, field=Account Name), the NLU should try to generate an output structurally similar to that original successful parse, replacing only the specific value and object/field if different.
+Pattern 2 (Implied "contains" for name searches): Show me [Salesforce Object (plural)] with the name [Search Value] in the [Salesforce Object (singular)] name
+Example: Raw User Query: "show accounts with QA in name" -> NLU Output for Zapier: "Show me accounts with the name QA in the account name" (The NLU must insert the actual value 'QA' here. No extra quotes around QA in this specific pattern, to exactly mimic the previously well-parsed example by Zapier.)
+Pattern 3 (Implied "contains" for other fields): Show me [Salesforce Object (plural)] with [Search Value] in the [Full Field Name]
+Example: Raw User Query: "contacts mentioning 'pipeline' in description" -> NLU Output for Zapier: "Show me contacts with 'pipeline' in the Description" (Here, single quotes around the value might be okay if the field name is explicit and distinct, but test carefully. The goal is for Zapier to see 'pipeline' as the value and 'Description' as the field, and infer 'contains').
+Key for searchValue in these new "contains" patterns: The NLU should embed the value naturally. If using Pattern 2, it should exactly replicate the structure that worked for parameter parsing before. If using Pattern 3, testing will be needed to see if single quotes help or hinder Zapier when the field name is explicit.
+Overall Principle: The NLU's output should be the simplest possible instruction that conveys the necessary information, strongly preferring patterns where Zapier has previously demonstrated correct parameter extraction, especially for searchValue. The NLU should NOT attempt to construct complex sentences explicitly stating the operator if simpler phrasings allow Zapier to infer it correctly alongside the value.
+System Prompt for the NLU Model (Core of the Change):
+
+The system prompt for client.chat.completions.create must be very direct about these output string requirements.
+It should emphasize: "Your output MUST be a simple, direct natural language string formatted for a Zapier MCP tool. Your primary goal is to ensure Zapier correctly parses the object, operator (often by inference), fieldToSearch, and especially the searchValue.
+For exact matches (like by unique ID or email, or when user implies 'equals'), use formats like: Find [Object] [field_alias]: [Value] or Find [Object] with the [field_alias] [Value].
+For 'contains' searches on a name field, try to use: Show me [Object_plural] with the name [Value] in the [Object_singular] name.
+For 'contains' searches on other fields, try: Show me [Object_plural] with [Value] in the [Field Name].
+Avoid complex sentences. The simpler and more direct the phrasing for Zapier, the better. Focus on making the searchValue unambiguously identifiable by Zapier."
+List of Available Zapier Salesforce Tools (For NLU System Prompt context - ensure accuracy):
+
+[
+    "Salesforce: Find Record", "Salesforce: Find Record(s)", /* ... other tools from image_1aad45.png ... */
+    "Salesforce: Create Record", "Salesforce: Update Record"
+    // Ensure this list is comprehensive and accurate for your Zapier setup.
+]
+The NLU will use this list to understand which types of actions are possible, guiding its interpretation of user intent, even if the generated string for Zapier doesn't explicitly name the tool (relying on Zapier to pick "Find Record" vs "Find Record(s)" based on phrasing like "accounts" vs "account" and the nature of the query).
+
+Request to Replit Agent:
+Please update the Python backend code, specifically the NLU pre-processing function (get_optimized_zapier_input) and its internal system prompt for client.chat.completions.create. The critical change is the output format that this NLU function generates to be sent to Zapier, as detailed in Requirement 2 (New Output Format for NLU-Generated input String). This aims to resolve the persistent searchValue misinterpretation by Zapier by simplifying the instruction to mimic patterns Zapier has previously parsed correctly.
+
+The application's web UI and other features will remain, but they depend on this NLU-to-Zapier instruction pipeline being fixed.
