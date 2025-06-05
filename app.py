@@ -515,10 +515,28 @@ Respond only with the optimized input string, nothing else."""
             results = []
             
             if isinstance(data, dict):
-                # Check for 'results' key
+                # Check for 'results' key (Zapier MCP format)
                 if 'results' in data:
-                    results = data['results']
-                # Check for 'records' key
+                    raw_results = data['results']
+                    
+                    # Filter out Zapier status records that don't contain actual Salesforce data
+                    if isinstance(raw_results, list):
+                        for result in raw_results:
+                            if isinstance(result, dict):
+                                # Skip records that only contain Zapier status metadata
+                                if ('_zap_search_was_found_status' in result and 
+                                    len([k for k in result.keys() if not k.startswith('_zap')]) == 0):
+                                    continue
+                                # Include records that have actual Salesforce fields
+                                if any(key in result for key in ['Id', 'Name', 'FirstName', 'LastName', 'Email', 'Account']):
+                                    results.append(result)
+                                # Include any record with substantive non-Zapier data
+                                elif len([k for k in result.keys() if not k.startswith('_zap')]) > 0:
+                                    results.append(result)
+                    else:
+                        results = raw_results
+                        
+                # Check for 'records' key (standard Salesforce format)
                 elif 'records' in data:
                     results = data['records']
                 # Check if data itself is a record
@@ -529,6 +547,11 @@ Respond only with the optimized input string, nothing else."""
                     return self.parse_salesforce_data(data['data'])
             elif isinstance(data, list):
                 results = data
+            
+            # Log detailed parsing results for debugging
+            logger.info(f"Parsed {len(results) if isinstance(results, list) else 0} valid Salesforce records from response")
+            if isinstance(results, list) and len(results) == 0:
+                logger.warning("No valid Salesforce records found in response - may indicate Zapier MCP connection issue")
             
             return {
                 "parsed": True,
