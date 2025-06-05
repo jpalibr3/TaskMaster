@@ -1,0 +1,34 @@
+Replit Agent,
+
+Thank you for the update. The logs show a new NLU strategy:
+
+User Query -> SOQL (e.g., SELECT ... WHERE Name LIKE '%QA%' ...)
+SOQL -> Simplified Zapier Instruction (e.g., Find Account name: QA)
+This second step of converting SOQL to Find Account name: QA changes the user's original 'contains QA' intent into an 'equals QA' search, which is not desired and explains why 'QA TESTING' isn't found by that specific instruction.
+
+Please modify the NLU pre-processing (get_optimized_zapier_input function) with the following specific logic for 'find' operations:
+
+NLU Core Task: The NLU (GPT-4/3.5-turbo via client.chat.completions.create) should analyze the user's raw query to determine:
+
+Intent (e.g., find one, find many).
+Salesforce Object (e.g., Account, Contact).
+The field to search (e.g., Account Name, Email).
+The exact search value (e.g., "QA", "QA TESTING", "chris@alibre.com").
+The intended operator (e.g., "equals", "contains").
+NLU Output String Generation for Zapier (This is the critical part):
+
+If the intended operator is "EQUALS" (or the query implies an exact match, like "Find account QA TESTING" or "contact email test@example.com"):
+The NLU should generate an input string for Zapier in the format: "Find [Salesforce Object (singular, Title Case)] [field alias, lowercase, e.g., 'name' or 'email']: [Search Value (preserve original case)]"
+Example: For "find account QA TESTING", NLU generates: "Find Account name: QA TESTING"
+If the intended operator is "CONTAINS" (e.g., user query "show accounts with QA in name"):
+The NLU must generate an input string for Zapier that exactly mimics the phrasing previously shown in mcp console.pdf (page 5) to be correctly parsed by Zapier for its parameters (object, operator, fieldToSearch, searchValue).
+NLU Output Template for "contains name": "show me [Salesforce Object (plural, lowercase)] with the name [Search Value (preserve original case)] in the [Salesforce Object (singular, lowercase)] name"
+Example: For "show accounts with QA in name", NLU generates: "show me accounts with the name QA in the account name"
+Example: For "list contacts containing 'Smith' in their name", NLU generates: "show me contacts with the name Smith in the contact name"
+For "contains" on fields other than the primary name: This is harder for Zapier to parse reliably with a simple natural language phrase. For now, if the NLU detects a "contains" on a non-name field (e.g., "accounts with 'ടെക്സസ്' in billing state"), it could try: "Show [Salesforce Object (plural)] where [Full Field Name (Title Case)] contains '[Search Value (preserve case)]'" Example: "Show Accounts where Billing State contains 'Texas'" (This is experimental; Zapier might still misparse the value. The primary focus is getting "contains name" to work).
+The NLU should NOT generate SOQL and then convert it back to these simple phrases. It should directly aim to generate these target natural language phrases based on its understanding of the user's flexible query.
+Logging: Please ensure the exact NLU-generated input string that is sent to Zapier is logged clearly in the Replit console before the client.responses.create(...) call.
+
+The goal is to feed Zapier an "Instructions" string that its existing NLU is most likely to decompose correctly into object, operator, fieldToSearch, and (most importantly) searchValue. We are trying to replicate the input conditions that previously led to successful parameter parsing by Zapier, particularly for "contains" on name fields.
+
+If, after implementing this, Zapier's logs show it is correctly parsing all parameters (e.g., object: Account, operator: contains, searchValue: QA, Field to Search: Account Name) but _zap_search_was_found_status is still false, then the issue is not with Zapier's parameter parsing from our NLU's output, but rather with Salesforce not returning results for that specific criteria (e.g., due to case sensitivity in the Salesforce search itself, or no records truly matching Name LIKE '%QA%').
