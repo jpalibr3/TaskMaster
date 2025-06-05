@@ -108,7 +108,7 @@ class SalesforceWebAssistant:
 Available Zapier Tools:
 {chr(10).join(f"- {tool}" for tool in available_zapier_tools)}
 
-Your task is to analyze the user's raw query and transform it into an optimized, explicit natural language input string that Zapier MCP can easily understand and execute.
+Your task is to analyze the user's raw query and transform it into a structured format that Zapier MCP can parse correctly.
 
 Guidelines for optimization:
 1. Identify the core intent (find single record, find multiple records, create, update, etc.)
@@ -116,25 +116,31 @@ Guidelines for optimization:
 3. Extract relevant field names, values, and search operators
 4. Determine if the user expects single or multiple results
 5. Select the most appropriate Zapier tool based on the intent
-6. Generate clear, explicit instructions that specify:
-   - The action to perform
-   - The Salesforce object type
-   - Search criteria with field names and values
-   - Expected result count (single vs multiple)
-7. IMPORTANT: Use 'contains' operator for partial matches, 'equals' only for exact IDs or when user specifies exact match
+6. Generate output using the EXACT template format below
+
+CRITICAL: Your output MUST be a single string following this exact template:
+"Action: [Zapier Tool Name]; Object: [Salesforce Object Name]; Field: [Full Field Name]; Operator: [Operator Keyword]; Value: '[Search Value]'; [Expectation]"
+
+Template Components:
+- Action: Use "Salesforce: Find Record(s)" for multiple results or "Salesforce: Find Record" for single results
+- Object: Account, Contact, Opportunity, Lead, etc.
+- Field: Account Name, Email, Phone, etc. (use proper Salesforce field names)
+- Operator: equals, contains, starts with (use simple keywords)
+- Value: Enclose in single quotes - this is CRITICAL for Zapier parsing
+- Expectation: "Expects: single result" or "Expects: multiple results"
 
 Examples:
 - Raw: "show me accounts with zapier in the name" 
-  → Optimized: "Find Account with Name: Zapier"
+  → Optimized: "Action: Salesforce: Find Record(s); Object: Account; Field: Account Name; Operator: contains; Value: 'Zapier'; Expects: multiple results"
 
 - Raw: "find john smith contact"
-  → Optimized: "Find Contact with Name: John Smith"
+  → Optimized: "Action: Salesforce: Find Record(s); Object: Contact; Field: Name; Operator: contains; Value: 'John Smith'; Expects: multiple results"
 
 - Raw: "get the QA testing account"
-  → Optimized: "Find Account with Name: QA"
+  → Optimized: "Action: Salesforce: Find Record(s); Object: Account; Field: Account Name; Operator: contains; Value: 'QA'; Expects: multiple results"
 
-- Raw: "find account QA TESTING"
-  → Optimized: "Find Account with Name: QA"
+- Raw: "contact email chris@alibre.com"
+  → Optimized: "Action: Salesforce: Find Record; Object: Contact; Field: Email; Operator: equals; Value: 'chris@alibre.com'; Expects: single result"
 
 - Raw: "create new lead for jane doe at acme corp"
   → Optimized: "Create new Salesforce Lead record with FirstName 'Jane', LastName 'Doe', Company 'Acme Corp'"

@@ -1,0 +1,69 @@
+Hello Replit Agent,
+
+We need to make a critical refinement to the NLU pre-processing layer in my Python web application. The application allows users to query Salesforce via a Zapier MCP integration, and the NLU layer is meant to translate flexible user queries into explicit input strings for the client.responses.create(...) call to Zapier.
+
+Current Persistent Problem (Referencing User-Provided Zapier MCP Logs - mcp console.pdf):
+The Zapier MCP server is consistently misinterpreting the searchValue when the NLU-generated input string uses natural language phrases for operators like "contains." For example, an instruction like "Find Salesforce Account where Name contains QA" results in Zapier incorrectly using "contains qa" as the searchValue, instead of operator: contains and searchValue: QA. This leads to _zap_search_was_found_status: false.
+
+
+
+However, very direct phrasings like "Find account name: QA TESTING" have worked, with Zapier correctly identifying operator: equals and searchValue: qa testing  and successfully returning data. Another success was "Find Salesforce contact with the email chris@alibre.com".
+
+
+
+
+The Goal: Ultimate Fix for searchValue Parsing by Zapier
+The NLU pre-processing function (get_optimized_zapier_input) must be updated to generate an input string for Zapier that strictly guides Zapier's parser to correctly identify all parameters, especially isolating the searchValue from the intended operator.
+
+Detailed Requirements for Modifying the NLU Pre-processor (get_optimized_zapier_input function in Python backend):
+
+Core NLU Task (No Change): The NLU model (e.g., GPT-4 via client.chat.completions.create) should still analyze the raw user query to determine:
+
+User intent (find single, find multiple, create, update, etc.).
+Salesforce Object (Account, Contact, etc.).
+Relevant field(s), search value(s).
+Intended operator (equals, contains, starts with, etc.).
+Whether single or multiple results are expected.
+Zapier Tool Selection (No Change): The NLU should still select the most appropriate Zapier Salesforce Tool from the available list (see point 4). Prioritize "Salesforce: Find Record(s)" for queries implying multiple results or using "contains"-like operators. Use "Salesforce: Find Record" for queries implying a unique result (e.g., lookup by ID or unique email).
+
+CRITICAL - New Optimized input String Format for Zapier:
+
+The NLU model must be instructed to generate its output (the string that will be passed to Zapier) in a very specific, structured natural language format. This format aims to mimic the successful explicit queries and clearly separate parameters for Zapier's parser.
+Recommended Template for NLU Output (for find operations): "Action: [Zapier Tool Name]; Object: [Salesforce Object Name]; Field: [Full Field Name]; Operator: [Operator Keyword]; Value: '[Search Value]'; [Expectation]"
+Breakdown of Template Components:
+Action: [Zapier Tool Name] (e.g., "Action: Salesforce: Find Record(s)" or "Action: Salesforce: Find Record"). This explicitly states the target Zapier tool.
+Object: [Salesforce Object Name] (e.g., "Object: Account", "Object: Contact").
+Field: [Full Field Name] (e.g., "Field: Account Name", "Field: Email", "Field: Billing City"). The NLU must map common user terms to these precise field names.
+Operator: [Operator Keyword] (e.g., "Operator: equals", "Operator: contains", "Operator: starts with"). Use concise keywords.
+Value: '[Search Value]' Crucially, enclose the actual search value in single quotes. This is vital for helping Zapier isolate it. The NLU should pass the value with its original casing as provided by the user, as Zapier might handle case normalization (e.g., "QA TESTING" became "qa testing" in a successful search ).
+
+[Expectation] (Optional but helpful, e.g., "; Expects: multiple results" or "; Expects: single result").
+Example Outputs from NLU (to be sent to Zapier):
+Raw User Query: "show me accounts with QA in name"
+NLU-Generated input for Zapier: "Action: Salesforce: Find Record(s); Object: Account; Field: Account Name; Operator: contains; Value: 'QA'; Expects: multiple results"
+Raw User Query: "details for account QA TESTING"
+NLU-Generated input for Zapier: "Action: Salesforce: Find Record; Object: Account; Field: Account Name; Operator: equals; Value: 'QA TESTING'; Expects: single result"
+Raw User Query: "contact email chris@alibre.com"
+NLU-Generated input for Zapier: "Action: Salesforce: Find Record; Object: Contact; Field: Email; Operator: equals; Value: 'chris@alibre.com'; Expects: single result"
+List of Available Zapier Salesforce Tools (For NLU System Prompt):
+
+The NLU's system prompt must include the accurate list of Zapier tools. (Please ensure this list is complete and accurate based on your Zapier MCP setup, derived from user-provided image image_1aad45.png and any other tools you have configured):
+[
+    "Salesforce: Find Record", "Salesforce: Find Record(s)", "Salesforce: Find Record(s) by Query",
+    "Salesforce: Find Record by Query", "Salesforce: Get Record Attachments", "Salesforce: Add Contact to Campaign",
+    "Salesforce: Add Lead to Campaign", "Salesforce: Convert Lead to Contact", "Salesforce: Create Child Records (with line item support)",
+    "Salesforce: Create Contact", "Salesforce: Find Child Records", "Salesforce: Create Lead",
+    "Salesforce: Create Note", "Salesforce: Create Record", "Salesforce: Create Record (UTC)",
+    "Salesforce: Send Email", "Salesforce: Update Contact", "Salesforce: Update Lead",
+    "Salesforce: Update Record", "Salesforce: Update Record (UTC)", "Salesforce: API Request (Beta)"
+]
+System Prompt for the NLU Model (Key Section to Update):
+
+The system prompt given to client.chat.completions.create (for GPT-4/3.5-turbo) needs to be very precise about generating the output string in the new structured format described in point 3.
+It should explicitly state: "Your output MUST be a single string following this exact template: 'Action: [Zapier Tool Name]; Object: [Salesforce Object Name]; Field: [Full Field Name]; Operator: [Operator Keyword]; Value: '[Search Value]'; [Expectation (optional)]'. Ensure the Search Value is enclosed in single quotes."
+Fallback/Error Handling: If the NLU pre-processor still struggles or Zapier returns _zap_search_was_found_status: false, the user interface should present a clearer message, perhaps suggesting to try a more direct query or breaking down the request. It should no longer just say "Found Unknown" without context if the search genuinely finds no records by Salesforce's standards.
+
+Request to Replit Agent:
+Please modify the Python backend code, specifically the get_optimized_zapier_input() function and the system prompt used for the NLU pre-processing call (client.chat.completions.create). The primary objective is for this function to return a string formatted precisely as described in Requirement 3 (New Optimized input String Format for Zapier). This format is designed to prevent Zapier from misinterpreting the searchValue by clearly delineating it with single quotes and using a more structured, semi-colon delimited phrase. Ensure the NLU also correctly selects between singular and plural Zapier 'Find Record(s)' tools based on query context.
+
+The rest of the application flow (web UI, data display after successful Zapier response, history, save, etc.) should remain the same, but will now be powered by a more reliable instruction stream to Zapier. "
