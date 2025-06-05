@@ -725,6 +725,12 @@ def send_command():
         logger.info(f"Sending optimized command to Zapier: {optimized_command}")
         result = assistant.call_zapier_mcp(optimized_command)
         
+        # Debug logging for Zapier response
+        logger.info(f"Zapier response success: {result.get('success')}")
+        if result.get('success'):
+            logger.info(f"Zapier response data type: {type(result.get('data'))}")
+            logger.info(f"Zapier response data preview: {str(result.get('data'))[:500]}...")
+        
         if result['success']:
             parsed_data = assistant.parse_salesforce_data(result['data'])
             
