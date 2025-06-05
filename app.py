@@ -34,6 +34,31 @@ class SalesforceWebAssistant:
         self.command_history = []
         self.max_history = 10
         
+        # Available Zapier Salesforce Tools for NLU reference
+        self.available_zapier_tools = [
+            "Salesforce: Find Record",
+            "Salesforce: Find Record(s)", 
+            "Salesforce: Find Record(s) by Query",
+            "Salesforce: Find Record by Query",
+            "Salesforce: Get Record Attachments",
+            "Salesforce: Add Contact to Campaign",
+            "Salesforce: Add Lead to Campaign", 
+            "Salesforce: Convert Lead to Contact",
+            "Salesforce: Create Child Records (with line item support)",
+            "Salesforce: Create Contact",
+            "Salesforce: Find Child Records",
+            "Salesforce: Create Lead",
+            "Salesforce: Create Note",
+            "Salesforce: Create Record",
+            "Salesforce: Create Record (UTC)",
+            "Salesforce: Send Email",
+            "Salesforce: Update Contact",
+            "Salesforce: Update Lead", 
+            "Salesforce: Update Record",
+            "Salesforce: Update Record (UTC)",
+            "Salesforce: API Request (Beta)"
+        ]
+        
     def initialize_clients(self) -> bool:
         """Initialize OpenAI client and Zapier MCP configuration."""
         try:
@@ -65,6 +90,86 @@ class SalesforceWebAssistant:
             })
             if len(self.command_history) > self.max_history:
                 self.command_history.pop(0)
+    
+    def get_optimized_zapier_input(self, raw_user_query: str, available_zapier_tools: List[str]) -> str:
+        """
+        NLU pre-processing function that transforms raw user queries into optimized Zapier inputs.
+        Uses OpenAI to analyze the query and generate explicit instructions for Zapier MCP.
+        """
+        try:
+            # Ensure client is initialized
+            if not self.client:
+                logger.error("OpenAI client not initialized")
+                return raw_user_query
+                
+            # Construct the system prompt for NLU analysis
+            system_prompt = f"""You are an AI that translates raw user Salesforce queries into optimized inputs for a Zapier MCP tool.
+
+Available Zapier Tools:
+{chr(10).join(f"- {tool}" for tool in available_zapier_tools)}
+
+Your task is to analyze the user's raw query and transform it into an optimized, explicit natural language input string that Zapier MCP can easily understand and execute.
+
+Guidelines for optimization:
+1. Identify the core intent (find single record, find multiple records, create, update, etc.)
+2. Determine the target Salesforce Object (Account, Contact, Opportunity, Lead, etc.)
+3. Extract relevant field names, values, and search operators
+4. Determine if the user expects single or multiple results
+5. Select the most appropriate Zapier tool based on the intent
+6. Generate clear, explicit instructions that specify:
+   - The action to perform
+   - The Salesforce object type
+   - Search criteria with field names and values
+   - Expected result count (single vs multiple)
+
+Examples:
+- Raw: "show me accounts with zapier in the name" 
+  → Optimized: "Find Salesforce Account records where the Account Name contains 'Zapier', expecting multiple results"
+
+- Raw: "find john smith contact"
+  → Optimized: "Find Salesforce Contact record where Name equals 'John Smith', expecting single result"
+
+- Raw: "get the QA testing account"
+  → Optimized: "Find Salesforce Account record where Name equals 'QA TESTING', expecting single result"
+
+- Raw: "create new lead for jane doe at acme corp"
+  → Optimized: "Create new Salesforce Lead record with FirstName 'Jane', LastName 'Doe', Company 'Acme Corp'"
+
+If the query is unclear or missing critical information, return: "I need more specific information. Could you specify the Salesforce object type (Account, Contact, etc.) and search criteria?"
+
+Respond only with the optimized input string, nothing else."""
+
+            # Make the NLU call to OpenAI
+            # the newest OpenAI model is "gpt-4o" which was released May 13, 2024.
+            # do not change this unless explicitly requested by the user
+            response = self.client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"Raw query: {raw_user_query}"}
+                ],
+                max_tokens=300,
+                temperature=0.1  # Low temperature for consistent, focused responses
+            )
+            
+            # Safely extract the response content
+            if response.choices and response.choices[0].message and response.choices[0].message.content:
+                optimized_input = response.choices[0].message.content.strip()
+            else:
+                logger.error("Invalid response from OpenAI")
+                return raw_user_query
+            
+            # Check if the NLU model couldn't understand the query
+            if "I need more specific information" in optimized_input or "Could you specify" in optimized_input:
+                return optimized_input
+            
+            logger.info(f"NLU Transform: '{raw_user_query}' → '{optimized_input}'")
+            return optimized_input
+            
+        except Exception as e:
+            logger.error(f"NLU pre-processing failed: {e}")
+            # Fallback to original query if NLU fails
+            return raw_user_query
     
     def parse_sse_response(self, response_text: str) -> List[Dict]:
         """Parse Server-Sent Events response from Zapier MCP."""
@@ -589,22 +694,36 @@ def send_command():
                 'error': 'Failed to initialize API clients'
             })
         
-        # Add to history
+        # Add original command to history
         assistant.add_to_history(command)
         
+        # NLU Pre-processing: Transform raw query into optimized Zapier input
+        logger.info(f"Processing raw query: {command}")
+        optimized_command = assistant.get_optimized_zapier_input(command, assistant.available_zapier_tools)
+        
+        # Check if NLU couldn't understand the query
+        if "I need more specific information" in optimized_command or "Could you specify" in optimized_command:
+            return jsonify({
+                'success': False,
+                'error': optimized_command,
+                'type': 'clarification_needed'
+            })
+        
         # Check if action requires confirmation
-        requires_confirmation = any(keyword in command.lower() for keyword in ['create', 'update', 'delete', 'log'])
+        requires_confirmation = any(keyword in optimized_command.lower() for keyword in ['create', 'update', 'delete', 'log'])
         
         if requires_confirmation and not data.get('confirmed', False):
             return jsonify({
                 'success': True,
                 'requires_confirmation': True,
                 'command': command,
-                'message': f"You're about to perform the action: '{command}'. Are you sure you want to proceed?"
+                'optimized_command': optimized_command,
+                'message': f"You're about to perform the action: '{optimized_command}'. Are you sure you want to proceed?"
             })
         
-        # Process the command
-        result = assistant.call_zapier_mcp(command)
+        # Process the optimized command with Zapier MCP
+        logger.info(f"Sending optimized command to Zapier: {optimized_command}")
+        result = assistant.call_zapier_mcp(optimized_command)
         
         if result['success']:
             parsed_data = assistant.parse_salesforce_data(result['data'])

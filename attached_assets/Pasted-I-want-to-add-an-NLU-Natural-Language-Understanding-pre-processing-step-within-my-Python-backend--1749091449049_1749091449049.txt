@@ -1,0 +1,79 @@
+I want to add an NLU (Natural Language Understanding) pre-processing step within my Python backend. This layer will take the user's raw, flexible query from the web UI and, using another OpenAI model (like GPT-4 or GPT-3.5-turbo via client.chat.completions.create), transform it into an optimized and explicit natural language input string. This optimized string will then be passed as the input to the existing client.responses.create(...) call that targets the Zapier MCP server.
+
+Detailed Requirements for the Python Backend Enhancement:
+
+NLU Pre-processing Function:
+
+Create a new Python function in the backend (e.g., get_optimized_zapier_input(raw_user_query: str, available_zapier_tools: list) -> str).
+This function will take the raw user query string as input.
+Inside this function, make an API call to OpenAI using client.chat.completions.create with a model like gpt-4 (preferred for complexity) or gpt-3.5-turbo.
+System Prompt for the NLU Model: The system prompt for this internal NLU call is crucial. It should instruct the model to:
+Analyze the user's raw query to determine:
+The core intent (e.g., find a single record, find multiple records, create a record, update a record, etc.).
+The target Salesforce Object (e.g., Account, Contact, Opportunity).
+Relevant field names, values, and search operators (e.g., Account Name contains 'Acme', Email equals 'test@example.com').
+Whether the user expects a single result or potentially multiple results.
+Refer to the provided list of available Zapier Salesforce Tools (see point 4 below) to select the most appropriate Zapier tool for the identified intent.
+Generate an optimized, explicit natural language input string. This string should be carefully crafted to be easily understood by the Zapier MCP server when used in the subsequent client.responses.create(...) call. It should clearly state the action, object, criteria, and imply which Zapier tool should be used if possible (e.g., "Find Salesforce Account records..." vs "Find Salesforce Account record...").
+Handle potential ambiguity by perhaps defaulting to broader searches or indicating if critical information is missing.
+Output: The function should return the optimized natural language string. If the NLU model cannot confidently process the query, it should return a specific error indicator or a message like "Sorry, I couldn't understand that request. Could you please rephrase?"
+Modify Existing API Endpoint (e.g., /send_command):
+
+The backend API endpoint that currently receives the raw user query from the frontend needs to be updated.
+New Flow:
+Receive raw user query from the frontend.
+Call the get_optimized_zapier_input() function with the raw query and the list of Zapier tools.
+If the NLU pre-processor returns an error or an "I don't understand" message, send this back to the frontend to display to the user.
+Otherwise, take the optimized input string returned by the NLU pre-processor.
+Use this optimized string as the input parameter in the client.responses.create(...) call to the Zapier MCP server.
+The rest of the process (handling Zapier's response, parsing Salesforce data, sending it to the frontend) remains largely the same, but will now benefit from more accurate initial queries to Zapier.
+OpenAI API Key: The same OpenAI API key (from Replit Secrets) will be used for both the new client.chat.completions.create call (for NLU pre-processing) and the existing client.responses.create call (for Zapier MCP).
+
+List of Available Zapier Salesforce Tools:
+
+The NLU pre-processing model needs to know what tools Zapier offers for Salesforce. This list should be passed to or embedded within the NLU model's prompt.
+Please use the following list (derived from user-provided image image_1aad45.png - add or modify as per your full list from Zapier):
+[
+    "Salesforce: Find Record",
+    "Salesforce: Find Record(s)",
+    "Salesforce: Find Record(s) by Query", // Potentially useful if NLU can construct SOQL
+    "Salesforce: Find Record by Query",
+    "Salesforce: Get Record Attachments",
+    "Salesforce: Add Contact to Campaign",
+    "Salesforce: Add Lead to Campaign",
+    "Salesforce: Convert Lead to Contact",
+    "Salesforce: Create Child Records (with line item support)",
+    "Salesforce: Create Contact",
+    "Salesforce: Find Child Records",
+    "Salesforce: Create Lead",
+    "Salesforce: Create Note",
+    "Salesforce: Create Record", // Generic create
+    "Salesforce: Create Record (UTC)",
+    "Salesforce: Send Email",
+    "Salesforce: Update Contact",
+    "Salesforce: Update Lead",
+    "Salesforce: Update Record", // Generic update
+    "Salesforce: Update Record (UTC)",
+    "Salesforce: API Request (Beta)" // Advanced, potentially for SOQL if NLU can generate it
+]
+Illustrative Example of the NLU Pre-processing:
+
+Raw User Query from Web UI: "show me accounts with the name zapier in the account name"
+NLU Pre-processor System Prompt (Simplified Example):
+You are an AI that translates raw user Salesforce queries into optimized inputs for a Zapier MCP tool.
+Available Zapier Tools: ["Salesforce: Find Record", "Salesforce: Find Record(s)", ... (full list)].
+Analyze the user's query: "{raw_user_query}"
+Determine intent, object, criteria, and expected result count.
+Select the best Zapier tool.
+Generate an optimized input string for Zapier.
+---
+User's raw query: "show me accounts with the name zapier in the account name"
+Optimized input string for Zapier:
+Expected NLU Pre-processor Output (Optimized Zapier Input String): "Find Salesforce Account records where the Account Name contains 'Zapier', expecting multiple results." (This output then goes into the input field of client.responses.create for Zapier)
+Request:
+Please provide the modified Python backend code (for Flask or FastAPI, whichever is simpler to integrate this logic into). Specifically, I need:
+
+The get_optimized_zapier_input() function, including the structure of the call to client.chat.completions.create and a well-crafted system prompt.
+The updated API endpoint (e.g., /send_command) showing how it incorporates this NLU pre-processing step before calling the Zapier MCP.
+Any necessary imports or helper functions.
+The existing frontend chat interface, data display logic (filtering nulls, "show more", etc.), and other features like history, save, action confirmation, and contextual follow-ups should remain and will now operate on the results obtained via this improved NLU pipeline. The focus of this request is solely on the backend Python enhancement for flexible prompt understanding. "
