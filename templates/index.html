@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Salesforce AI Assistant</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <h1>🤖 Salesforce AI Assistant</h1>
+            <p>Your intelligent Salesforce companion</p>
+        </header>
+
+        <div class="chat-container">
+            <div class="chat-messages" id="chatMessages">
+                <div class="message ai-message">
+                    <div class="message-content">
+                        <strong>🤖 Salesforce AI:</strong> Hello! I'm your Salesforce AI Assistant. How can I help you today?
+                        <br><br>
+                        You can ask me to:
+                        <ul>
+                            <li>Find contacts, accounts, or opportunities</li>
+                            <li>Create new records</li>
+                            <li>Update existing information</li>
+                            <li>Log activities and tasks</li>
+                        </ul>
+                        Try commands like "find contacts at Acme Corp" or "show all open opportunities".
+                    </div>
+                </div>
+            </div>
+
+            <div class="chat-input-container">
+                <div class="input-wrapper">
+                    <input type="text" id="messageInput" placeholder="Type your Salesforce command here..." autocomplete="off">
+                    <button id="sendButton">Send</button>
+                </div>
+                <div class="input-actions">
+                    <button id="historyButton" class="action-btn">History</button>
+                    <button id="clearButton" class="action-btn">Clear Chat</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Loading overlay -->
+    <div class="loading-overlay" id="loadingOverlay">
+        <div class="loading-spinner"></div>
+        <p>Processing your request...</p>
+    </div>
+
+    <!-- Confirmation modal -->
+    <div class="modal-overlay" id="confirmationModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3>Confirm Action</h3>
+            </div>
+            <div class="modal-body">
+                <p id="confirmationMessage"></p>
+            </div>
+            <div class="modal-actions">
+                <button id="confirmYes" class="btn-primary">Yes, Proceed</button>
+                <button id="confirmNo" class="btn-secondary">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Record selection modal -->
+    <div class="modal-overlay" id="recordSelectionModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3>Select Record</h3>
+            </div>
+            <div class="modal-body">
+                <p>Multiple records found. Please select one:</p>
+                <div id="recordList" class="record-list"></div>
+            </div>
+            <div class="modal-actions">
+                <button id="newSearchBtn" class="btn-secondary">New Search</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- History modal -->
+    <div class="modal-overlay" id="historyModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3>Command History</h3>
+            </div>
+            <div class="modal-body">
+                <div id="historyList" class="history-list"></div>
+            </div>
+            <div class="modal-actions">
+                <button id="closeHistoryBtn" class="btn-secondary">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>
