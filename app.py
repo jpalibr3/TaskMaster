@@ -110,8 +110,8 @@ class SalesforceWebAssistant:
 Your goal is to construct a SOQL query that accurately reflects the user's request for finding information.
 
 Guidelines:
-1. Identify the main Salesforce Object (e.g., Account, Contact, Opportunity) for the FROM clause.
-2. Determine essential fields for the SELECT clause (always include Id, Name. For Accounts: Type, BillingCity, BillingState. For Contacts: Email, Phone, Title, AccountId. Add other fields if clearly implied by the user's query).
+1. Identify the main Salesforce Object (e.g., Account, Contact, Opportunity, Lead, Asset) for the FROM clause.
+2. Determine essential fields for the SELECT clause (always include Id, Name. For Accounts: Type, BillingCity, BillingState. For Contacts: Email, Phone, Title, AccountId. For Assets: SerialNumber, AccountId, ContactId, Status. Add other fields if clearly implied by the user's query).
 3. Construct the WHERE clause:
    - For "equals" intents on text fields: `FieldName = 'SearchValue'`
    - For "contains" intents on text fields: `FieldName LIKE '%SearchValue%'` (ensure wildcards '% %' are used).
@@ -255,13 +255,17 @@ Respond only with the SOQL query string or ERROR:SOQL_GENERATION_FAILED, nothing
         
         # Determine object type
         object_type = 'Account'  # default
-        if any(word in action for word in ['contact', 'person', 'people']):
+        action_lower = action.lower()
+        
+        if 'asset' in action_lower:
+            object_type = 'Asset'
+        elif any(word in action_lower for word in ['contact', 'person', 'people']):
             object_type = 'Contact'
-        elif any(word in action for word in ['account', 'company', 'organization']):
+        elif any(word in action_lower for word in ['account', 'company', 'organization']):
             object_type = 'Account'
-        elif any(word in action for word in ['opportunity', 'deal', 'sale']):
+        elif any(word in action_lower for word in ['opportunity', 'deal', 'sale']):
             object_type = 'Opportunity'
-        elif any(word in action for word in ['lead', 'prospect']):
+        elif any(word in action_lower for word in ['lead', 'prospect']):
             object_type = 'Lead'
         
         # Extract search field and value
@@ -275,6 +279,13 @@ Respond only with the SOQL query string or ERROR:SOQL_GENERATION_FAILED, nothing
         if email_match:
             search_field = 'Email'
             search_value = email_match.group(1)
+        
+        # Serial Number search for Assets
+        elif 'serial' in action_lower and 'number' in action_lower:
+            serial_match = re.search(r'(?:serial\s*number[:\s]*|serial[:\s]+)(\d+)', action, re.IGNORECASE)
+            if serial_match:
+                search_field = 'SerialNumber'
+                search_value = serial_match.group(1)
         
         # Specific name searches
         elif 'zapier' in action.lower():

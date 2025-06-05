@@ -1,0 +1,83 @@
+It seems the core issue lies in how your Python backend, specifically the `app.py` script, determines the Salesforce object type before sending the request to Zapier. Zapier's error message ("*You provided a query for the Asset object, but the object is currently set to Opportunity. Should I proceed with the Opportunity object or switch to Asset?*") is very telling. It indicates that:
+
+1.  The natural language query you sent (e.g., "show asset with serial number...") was correctly interpreted by *Zapier's NLU* as intending to target the "Asset" object.
+2.  However, the actual parameters your `app.py` script sent along with that instruction likely *explicitly specified the object as "Opportunity."*
+
+Here's why your application wouldn't automatically switch to the "Asset" object and what needs to be changed:
+
+1.  **Hardcoded Object Detection in `extract_search_parameters`**:
+    * The function `extract_search_parameters` in your `app.py` is responsible for determining the `object_type` from the user's command.
+    * Currently, this function has a predefined list of keywords to identify objects like 'Contact', 'Account', 'Opportunity', or 'Lead'. It defaults to 'Account' if none of those are found.
+    * Crucially, **it does not have any logic to recognize "Asset" as an object type.**
+        ```python
+        # From app.py
+        def extract_search_parameters(self, action: str) -> Dict[str, str]:
+            # Determine object type
+            object_type = 'Account'  # default
+            if any(word in action for word in ['contact', 'person', 'people']):
+                object_type = 'Contact'
+            elif any(word in action for word in ['account', 'company', 'organization']):
+                object_type = 'Account'
+            elif any(word in action for word in ['opportunity', 'deal', 'sale']): # This might be incorrectly triggered
+                object_type = 'Opportunity'
+            elif any(word in action for word in ['lead', 'prospect']):
+                object_type = 'Lead'
+            # ... NO MENTION OF 'ASSET'
+        ```
+    * If your query "show asset..." didn't trigger any of the existing conditions strongly enough, or if some other part of the "action" string (which is the NLU-optimized query) accidentally contained a keyword like "opportunity" (or if "Opportunity" was a sticky default from a previous, unrelated interaction), `extract_search_parameters` would have returned "Opportunity".
+
+2.  **NLU Prompt in `get_optimized_zapier_input`**:
+    * The system prompt used in `get_optimized_zapier_input` for the OpenAI call instructs the AI to determine the Salesforce Object but gives examples like "Account, Contact, Opportunity, Lead".
+    * While a powerful model like GPT-4o *might* infer "Asset", its primary examples don't include it. This function's main job is to structure the natural language for Zapier. The `extract_search_parameters` function seems to be the more direct determiner of the `object` parameter sent to Zapier.
+
+3.  **Parameter Construction in `prepare_tool_arguments`**:
+    * This function calls `extract_search_parameters` to get the `object_type`.
+    * It then explicitly sets `args['object'] = search_params['object_type']` in the payload for Zapier.
+    * If `extract_search_parameters` determined the object to be "Opportunity", then `object: Opportunity` was sent to Zapier, leading to the conflict.
+
+**Why it didn't switch automatically:**
+
+Your `app.py` code makes a determination of the object type *before* calling Zapier. Zapier received an instruction ("show asset...") but also an explicit parameter (`object: Opportunity`). It correctly identified this discrepancy and asked for clarification rather than overriding an explicit parameter with an inferred one from the free-text instructions. The system isn't currently designed to let Zapier's NLU override the object type explicitly set by your backend.
+
+**To fix this and allow it to correctly identify "Asset":**
+
+You need to modify `app.py` in the following ways:
+
+1.  **Update `extract_search_parameters`**:
+    Add a condition to recognize "asset":
+    ```python
+    def extract_search_parameters(self, action: str) -> Dict[str, str]:
+        object_type = 'Account'  # default
+        action_lower = action.lower() # Ensure consistent case for checks
+
+        if 'asset' in action_lower: # Add this condition
+            object_type = 'Asset'
+        elif any(word in action_lower for word in ['contact', 'person', 'people']):
+            object_type = 'Contact'
+        elif any(word in action_lower for word in ['account', 'company', 'organization']):
+            object_type = 'Account'
+        elif any(word in action_lower for word in ['opportunity', 'deal', 'sale']):
+            object_type = 'Opportunity'
+        elif any(word in action_lower for word in ['lead', 'prospect']):
+            object_type = 'Lead'
+        # ... rest of the function ...
+        return {
+            'object_type': object_type,
+            'search_field': search_field,
+            'search_value': search_value,
+            'search_field2': search_field2,
+            'search_value2': search_value2
+        }
+    ```
+    Make sure this new 'asset' check is placed appropriately in the `if/elif` chain (e.g., before more generic terms if "asset" might appear with other keywords).
+
+2.  **(Recommended) Enhance the NLU Prompt in `get_optimized_zapier_input`**:
+    While the primary fix is in `extract_search_parameters`, it would also be beneficial to include "Asset" in the list of example Salesforce Objects in the system prompt for the `get_optimized_zapier_input` function. This helps the NLU model be more aware of "Asset" as a valid object type when it's processing the raw user query and potentially structuring its output.
+    ```python
+    # Inside get_optimized_zapier_input, update the system_prompt part:
+    # ...
+    # 2. Salesforce Object (Account, Contact, Opportunity, Lead, Asset) # Add Asset here
+    # ...
+    ```
+
+By making these changes, your `app.py` backend should correctly identify "Asset" from your query and explicitly tell Zapier to use the "Asset" object, resolving the conflict.
