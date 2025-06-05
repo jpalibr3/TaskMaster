@@ -108,7 +108,7 @@ class SalesforceWebAssistant:
 Available Zapier Tools:
 {chr(10).join(f"- {tool}" for tool in available_zapier_tools)}
 
-Your task is to analyze the user's raw query and transform it into a structured format that Zapier MCP can parse correctly.
+Your task is to analyze the user's raw query and transform it into a natural language sentence that Zapier MCP can parse correctly.
 
 Guidelines for optimization:
 1. Identify the core intent (find single record, find multiple records, create, update, etc.)
@@ -116,31 +116,30 @@ Guidelines for optimization:
 3. Extract relevant field names, values, and search operators
 4. Determine if the user expects single or multiple results
 5. Select the most appropriate Zapier tool based on the intent
-6. Generate output using the EXACT template format below
+6. Generate output using natural sentence structure
 
-CRITICAL: Your output MUST be a single string following this exact template:
-"Action: [Zapier Tool Name]; Object: [Salesforce Object Name]; Field: [Full Field Name]; Operator: [Operator Keyword]; Value: '[Search Value]'; [Expectation]"
+CRITICAL: Your output MUST be a single, natural language sentence formatted to help Zapier's MCP parse it correctly. For find operations, use this structure:
+"Find Salesforce [Object] [records/record] where [Field] [operator] '[Value]'"
 
-Template Components:
-- Action: Use "Salesforce: Find Record(s)" for multiple results or "Salesforce: Find Record" for single results
-- Object: Account, Contact, Opportunity, Lead, etc.
-- Field: Account Name, Email, Phone, etc. (use proper Salesforce field names)
-- Operator: equals, contains, starts with (use simple keywords)
-- Value: Enclose in single quotes - this is CRITICAL for Zapier parsing
-- Expectation: "Expects: single result" or "Expects: multiple results"
+Template Guidelines:
+- Use "records" for multiple results, "record" for single results
+- Map user terms to proper Salesforce field names (e.g., "name" → "Account Name" for accounts)
+- Use simple operators: "contains", "equals", "starts with"
+- ALWAYS enclose the search value in single quotes
+- Do NOT use explicit keywords like "Action:", "Object:", "Field:", "Value:" in the output
 
 Examples:
 - Raw: "show me accounts with zapier in the name" 
-  → Optimized: "Action: Salesforce: Find Record(s); Object: Account; Field: Account Name; Operator: contains; Value: 'Zapier'; Expects: multiple results"
+  → Optimized: "Find Salesforce Account records where Account Name contains 'Zapier'"
 
 - Raw: "find john smith contact"
-  → Optimized: "Action: Salesforce: Find Record(s); Object: Contact; Field: Name; Operator: contains; Value: 'John Smith'; Expects: multiple results"
+  → Optimized: "Find Salesforce Contact records where Name contains 'John Smith'"
 
 - Raw: "get the QA testing account"
-  → Optimized: "Action: Salesforce: Find Record(s); Object: Account; Field: Account Name; Operator: contains; Value: 'QA'; Expects: multiple results"
+  → Optimized: "Find Salesforce Account records where Account Name contains 'QA'"
 
 - Raw: "contact email chris@alibre.com"
-  → Optimized: "Action: Salesforce: Find Record; Object: Contact; Field: Email; Operator: equals; Value: 'chris@alibre.com'; Expects: single result"
+  → Optimized: "Find Salesforce Contact record where Email equals 'chris@alibre.com'"
 
 - Raw: "create new lead for jane doe at acme corp"
   → Optimized: "Create new Salesforce Lead record with FirstName 'Jane', LastName 'Doe', Company 'Acme Corp'"
