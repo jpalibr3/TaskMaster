@@ -121,7 +121,7 @@ class SalesforceAI {
                 this.displaySingleRecord(data.record, data.follow_ups, data.message);
                 break;
             case 'multiple_records':
-                this.displayMultipleRecords(data.records, data.message, command);
+                this.displayMultipleRecords(data.records, data.message, command, data.object_type);
                 break;
             case 'no_results':
                 this.addMessage(data.message, 'ai');
