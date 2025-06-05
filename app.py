@@ -818,7 +818,8 @@ def send_command():
                     for i, record in enumerate(results):
                         name = record.get('Name') or f"{record.get('FirstName', '')} {record.get('LastName', '')}".strip()
                         email = record.get('Email', '')
-                        record_id = record.get('Id', '')
+                        # Try both 'id' and 'Id' for record ID
+                        record_id = record.get('id') or record.get('Id', '')
                         
                         record_summaries.append({
                             'index': i,
