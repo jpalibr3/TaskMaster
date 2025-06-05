@@ -8,6 +8,7 @@ import os
 import json
 import logging
 import requests
+import re
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 from flask import Flask, render_template, request, jsonify, send_file
@@ -208,8 +209,6 @@ Respond only with the SOQL query string or ERROR:SOQL_GENERATION_FAILED, nothing
     
     def prepare_tool_arguments(self, action: str, selected_tool: Dict) -> Dict[str, Any]:
         """Prepare specific arguments for Salesforce tools based on the action."""
-        import re
-        
         action_lower = action.lower()
         tool_name = selected_tool.get('name', '').lower()
         
@@ -230,7 +229,19 @@ Respond only with the SOQL query string or ERROR:SOQL_GENERATION_FAILED, nothing
                 if match_from:
                     object_from_soql = match_from.group(1)
                     # Ensure proper capitalization for Salesforce objects
-                    object_for_zapier = object_from_soql.capitalize()
+                    if object_from_soql.lower() == 'lead':
+                        object_for_zapier = 'Lead'
+                    elif object_from_soql.lower() == 'contact':
+                        object_for_zapier = 'Contact'
+                    elif object_from_soql.lower() == 'account':
+                        object_for_zapier = 'Account'
+                    elif object_from_soql.lower() == 'asset':
+                        object_for_zapier = 'Asset'
+                    elif object_from_soql.lower() == 'opportunity':
+                        object_for_zapier = 'Opportunity'
+                    else:
+                        object_for_zapier = object_from_soql.capitalize()
+                    
                     args["object"] = object_for_zapier
                     logger.info(f"Extracted object '{object_for_zapier}' from SOQL: {actual_soql_query}")
                 
