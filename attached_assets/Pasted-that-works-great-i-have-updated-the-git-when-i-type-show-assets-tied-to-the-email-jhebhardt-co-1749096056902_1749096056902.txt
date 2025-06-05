@@ -1,0 +1,83 @@
+that works great. i have updated the git.
+
+
+
+when i type: show assets tied to the email jhebhardt@cox.net
+
+ 
+
+a pop-up window shows with both assets (good). when i click out of it (instead of clicking on one) and then i ask a new question - i get an error: Error: Tool call failed: 405 -
+
+
+
+when i clear the chat history and try again, it works
+
+
+
+how to fix?
+
+
+
+
+Show thinking
+This is an interesting issue! A "405 Method Not Allowed" error typically means that the HTTP request method (like POST, GET) being used is not allowed for the specific URL (endpoint) that was called. The fact that it works after clearing chat (which often implies a page refresh and resetting of JavaScript state) and fails after interacting with the "Select Record" modal suggests that some state in your frontend JavaScript is likely being carried over and is somehow corrupting the subsequent request to your backend, which then leads to a malformed request to Zapier.
+
+Here's a breakdown of why this might be happening and how to fix it:
+
+Likely Cause: Uncleared JavaScript State
+
+Modal Sets State: When the "Select Record" pop-up appears (triggered by displayMultipleRecords in static/script.js), your SalesforceAI class sets this.currentRecords and this.originalCommand.
+Modal Dismissal: When you click out of the modal (likely by clicking the overlay), the hideModal('recordSelectionModal') function is called. However, this function (and the overlay click listener) only hides the modal; it does not clear this.currentRecords or this.originalCommand.
+State Carried Over: These variables remain populated with data from the previous "show assets..." query.
+New Query Problem: When you ask a new question:
+It's not immediately obvious how these uncleared variables would directly cause a 405 error on a new, independent query, as the sendMessage function seems to construct a fresh request based on the new input.
+However, it's possible that some part of your backend logic in app.py (perhaps within get_optimized_zapier_input or prepare_tool_arguments) behaves differently or constructs a malformed request payload if it unexpectedly finds or uses these old states, or if some other part of the JavaScript interacts with these. Even if not used directly, their presence might trigger an unintended code path or subtly alter the next command processing.
+The "405 -" error you're seeing comes from app.py when the call to Zapier itself fails with a 405 status code. This means Zapier rejected the request your Python backend made to it. This could happen if the tool_args or the selected_tool['name'] in the call_zapier_mcp function becomes invalid or empty due to the inconsistent state, leading Zapier to not recognize the endpoint or method for the provided parameters.
+Why "Clearing Chat History" Works
+
+If "clearing chat history" involves a page refresh (which is common), all JavaScript variables, including this.currentRecords and this.originalCommand, are reset to their initial states. This explains why it works after a refresh.
+The clearChat() function in static/script.js only removes message elements from the display. It does not reset these internal JavaScript state variables. So, if simply clicking the "Clear Chat" button (without a refresh) fixes it, the problem might be more complex. However, usually, when users say "clear chat and try again works," a refresh is often implied or performed.
+How to Fix
+
+The most robust solution is to ensure that any state related to the "Select Record" modal is cleared when the modal is dismissed without making a selection.
+
+Modify static/script.js:
+
+Update the overlay click listener to clear the state when the recordSelectionModal is closed:
+
+JavaScript
+
+// Inside the initializeEventListeners method of SalesforceAI class
+
+document.querySelectorAll('.modal-overlay').forEach(modal => {
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) {
+            this.hideModal(modal.id);
+            // Add this block to clear state for the record selection modal
+            if (modal.id === 'recordSelectionModal') {
+                this.currentRecords = [];
+                this.originalCommand = '';
+                console.log('Cleared currentRecords and originalCommand after closing recordSelectionModal via overlay.');
+            }
+        }
+    });
+});
+Update the "New Search" button's event listener to also clear this state:
+
+JavaScript
+
+// Inside the initializeEventListeners method of SalesforceAI class
+
+// Record selection modal buttons
+document.getElementById('newSearchBtn').addEventListener('click', () => {
+    this.hideModal('recordSelectionModal');
+    // Add these lines to clear the state
+    this.currentRecords = [];
+    this.originalCommand = '';
+    console.log('Cleared currentRecords and originalCommand after clicking New Search.');
+});
+Explanation of Fixes:
+
+By explicitly resetting this.currentRecords = [] and this.originalCommand = '' when the recordSelectionModal is closed without a selection (either by clicking the overlay or the "New Search" button), you ensure that these variables don't carry stale data that could interfere with subsequent, unrelated commands.
+This is good practice for managing UI states: when a temporary workflow (like selecting from a list) is aborted, its associated temporary data should be cleaned up.
+After applying these changes to your static/script.js, test the scenario again. This should prevent the 405 error when you ask a new question after dismissing the "Select Record" modal.

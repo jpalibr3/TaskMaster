@@ -39,7 +39,13 @@ class SalesforceAI {
         document.getElementById('confirmNo').addEventListener('click', () => this.hideModal('confirmationModal'));
         
         // Record selection modal buttons
-        document.getElementById('newSearchBtn').addEventListener('click', () => this.hideModal('recordSelectionModal'));
+        document.getElementById('newSearchBtn').addEventListener('click', () => {
+            this.hideModal('recordSelectionModal');
+            // Clear state when starting new search
+            this.currentRecords = [];
+            this.originalCommand = '';
+            console.log('Cleared currentRecords and originalCommand after clicking New Search.');
+        });
         
         // History modal button
         document.getElementById('closeHistoryBtn').addEventListener('click', () => this.hideModal('historyModal'));
@@ -49,6 +55,12 @@ class SalesforceAI {
             modal.addEventListener('click', (e) => {
                 if (e.target === modal) {
                     this.hideModal(modal.id);
+                    // Clear state when record selection modal is dismissed
+                    if (modal.id === 'recordSelectionModal') {
+                        this.currentRecords = [];
+                        this.originalCommand = '';
+                        console.log('Cleared currentRecords and originalCommand after closing recordSelectionModal via overlay.');
+                    }
                 }
             });
         });
