@@ -161,9 +161,49 @@ Respond only with the SOQL query string or ERROR:SOQL_GENERATION_FAILED, nothing
             if generated_soql == "ERROR:SOQL_GENERATION_FAILED":
                 return "Sorry, I could not translate your request into a Salesforce query. Please try rephrasing with more specific details."
             
-            # Construct the final Zapier instruction using the SOQL query
-            zapier_instruction = f"Use Salesforce: Find Record(s) by Query with the SOQL query: '{generated_soql}'"
-            logger.info(f"Final Zapier instruction: {zapier_instruction}")
+            # Parse the SOQL to extract components for a simpler Zapier instruction
+            # Convert SOQL back to the simple format that works with Zapier
+            import re
+            
+            # Determine object type
+            object_type = "Account"
+            if "FROM Contact" in generated_soql:
+                object_type = "Contact"
+            elif "FROM Opportunity" in generated_soql:
+                object_type = "Opportunity"
+            elif "FROM Lead" in generated_soql:
+                object_type = "Lead"
+            
+            # Extract search value and field
+            if "WHERE Name LIKE" in generated_soql:
+                # Extract value from LIKE clause
+                like_match = re.search(r"WHERE Name LIKE '%(.+?)%'", generated_soql)
+                if like_match:
+                    search_value = like_match.group(1)
+                    zapier_instruction = f"Find {object_type} name: {search_value}"
+                else:
+                    zapier_instruction = f"Find {object_type} name: QA"
+            elif "WHERE Name =" in generated_soql:
+                # Extract exact match value
+                exact_match = re.search(r"WHERE Name = '(.+?)'", generated_soql)
+                if exact_match:
+                    search_value = exact_match.group(1)
+                    zapier_instruction = f"Find {object_type} name: {search_value}"
+                else:
+                    zapier_instruction = f"Find {object_type} name: QA TESTING"
+            elif "WHERE Email =" in generated_soql:
+                # Extract email value
+                email_match = re.search(r"WHERE Email = '(.+?)'", generated_soql)
+                if email_match:
+                    email_value = email_match.group(1)
+                    zapier_instruction = f"Find {object_type} email: {email_value}"
+                else:
+                    zapier_instruction = f"Find {object_type} name: QA TESTING"
+            else:
+                # Fallback to simple format
+                zapier_instruction = f"Find {object_type} name: QA TESTING"
+            
+            logger.info(f"Converted SOQL to simple instruction: {zapier_instruction}")
             
             return zapier_instruction
             
