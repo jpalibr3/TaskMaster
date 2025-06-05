@@ -121,16 +121,20 @@ Guidelines for optimization:
    - The Salesforce object type
    - Search criteria with field names and values
    - Expected result count (single vs multiple)
+7. IMPORTANT: Use 'contains' operator for partial matches, 'equals' only for exact IDs or when user specifies exact match
 
 Examples:
 - Raw: "show me accounts with zapier in the name" 
   → Optimized: "Find Salesforce Account records where the Account Name contains 'Zapier', expecting multiple results"
 
 - Raw: "find john smith contact"
-  → Optimized: "Find Salesforce Contact record where Name equals 'John Smith', expecting single result"
+  → Optimized: "Find Salesforce Contact records where Name contains 'John Smith', expecting multiple results"
 
 - Raw: "get the QA testing account"
-  → Optimized: "Find Salesforce Account record where Name equals 'QA TESTING', expecting single result"
+  → Optimized: "Find Salesforce Account records where Name contains 'QA', expecting multiple results"
+
+- Raw: "find account QA TESTING"
+  → Optimized: "Find Salesforce Account records where Name contains 'QA TESTING', expecting multiple results"
 
 - Raw: "create new lead for jane doe at acme corp"
   → Optimized: "Create new Salesforce Lead record with FirstName 'Jane', LastName 'Doe', Company 'Acme Corp'"
@@ -764,8 +768,9 @@ def send_command():
                 if count == 0:
                     return jsonify({
                         'success': True,
-                        'message': 'No records found matching your query.',
-                        'type': 'no_results'
+                        'message': f'No records found matching your query: "{command}". Try using broader search terms or check if the record exists in your Salesforce instance.',
+                        'type': 'no_results',
+                        'suggestion': 'Try searching with partial names or different field values.'
                     })
                 elif count == 1:
                     # Single record found
