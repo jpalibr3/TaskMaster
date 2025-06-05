@@ -114,9 +114,37 @@ def call_zapier_mcp_via_openai(client, command, zapier_mcp_url, zapier_mcp_api_k
         logger.error(f"OpenAI API call failed: {e}")
         raise
 
+def parse_sse_response(response_text):
+    """Parse Server-Sent Events response from Zapier MCP."""
+    events = []
+    lines = response_text.strip().split('\n')
+    current_event = {}
+    
+    for line in lines:
+        line = line.strip()
+        if line.startswith('event:'):
+            if current_event:
+                events.append(current_event)
+            current_event = {'type': line[6:].strip()}
+        elif line.startswith('data:'):
+            data = line[5:].strip()
+            if data:
+                try:
+                    current_event['data'] = json.loads(data)
+                except json.JSONDecodeError:
+                    current_event['data'] = data
+        elif line == '' and current_event:
+            events.append(current_event)
+            current_event = {}
+    
+    if current_event:
+        events.append(current_event)
+    
+    return events
+
 def call_zapier_mcp_directly(action, parameters, zapier_mcp_url, zapier_mcp_api_key):
     """
-    Makes actual HTTP request to Zapier MCP server.
+    Makes actual HTTP request to Zapier MCP server using proper SSE handling.
     """
     logger.info(f"Calling Zapier MCP - Action: {action}, Parameters: {parameters}")
     
@@ -127,7 +155,7 @@ def call_zapier_mcp_directly(action, parameters, zapier_mcp_url, zapier_mcp_api_
             "Accept": "application/json, text/event-stream"
         }
         
-        # First, let's discover what tools are available
+        # First, discover available tools
         tools_payload = {
             "jsonrpc": "2.0",
             "id": 1,
@@ -137,43 +165,51 @@ def call_zapier_mcp_directly(action, parameters, zapier_mcp_url, zapier_mcp_api_
         logger.info("Discovering available Zapier MCP tools...")
         tools_response = requests.post(zapier_mcp_url, headers=headers, json=tools_payload, timeout=30)
         
-        logger.info(f"Tools response status: {tools_response.status_code}")
-        logger.info(f"Tools response headers: {tools_response.headers}")
-        logger.info(f"Tools response text: {tools_response.text}")
-        
         if tools_response.status_code == 200:
-            try:
-                tools_data = tools_response.json()
-                logger.info(f"Available tools: {tools_data}")
-            except Exception as e:
-                logger.error(f"Failed to parse tools response as JSON: {e}")
-                return {
-                    "success": False,
-                    "action": action,
-                    "message": f"Failed to parse Zapier MCP response: {e}",
-                    "data": {"response_text": tools_response.text, "status_code": tools_response.status_code}
-                }
+            events = parse_sse_response(tools_response.text)
+            logger.info(f"Received {len(events)} events from tools/list")
             
-            # Try to find a suitable tool for the action
-            if 'result' in tools_data and 'tools' in tools_data['result']:
-                available_tools = tools_data['result']['tools']
-                tool_names = [tool.get('name', 'unknown') for tool in available_tools]
-                logger.info(f"Tool names: {tool_names}")
-                
-                # Use the first available tool that seems related to Salesforce
-                salesforce_tool = None
-                for tool in available_tools:
-                    tool_name = tool.get('name', '').lower()
-                    if 'salesforce' in tool_name or 'search' in tool_name or 'find' in tool_name:
-                        salesforce_tool = tool
+            # Look for tools in the events
+            available_tools = []
+            for event in events:
+                if event.get('type') == 'message' and isinstance(event.get('data'), dict):
+                    event_data = event['data']
+                    if 'result' in event_data and 'tools' in event_data['result']:
+                        available_tools = event_data['result']['tools']
                         break
+            
+            if available_tools:
+                tool_names = [tool.get('name', 'unknown') for tool in available_tools]
+                logger.info(f"Available tools: {tool_names}")
+                
+                # Find the best tool for Salesforce operations
+                salesforce_tool = None
+                
+                # For account searches, prefer specific tools
+                if 'account' in action.lower() and 'find' in action.lower():
+                    for tool in available_tools:
+                        tool_name = tool.get('name', '')
+                        if tool_name in ['salesforce_find_record_by_query', 'salesforce_find_record']:
+                            salesforce_tool = tool
+                            break
+                
+                # Fallback to general search tools
+                if not salesforce_tool:
+                    for tool in available_tools:
+                        tool_name = tool.get('name', '').lower()
+                        if any(keyword in tool_name for keyword in ['find_record', 'search', 'query']):
+                            salesforce_tool = tool
+                            break
                 
                 if not salesforce_tool and available_tools:
-                    salesforce_tool = available_tools[0]  # Use first available tool
+                    salesforce_tool = available_tools[0]
                 
                 if salesforce_tool:
                     tool_name = salesforce_tool.get('name')
-                    payload = {
+                    logger.info(f"Using tool: {tool_name}")
+                    
+                    # Call the selected tool
+                    call_payload = {
                         "jsonrpc": "2.0",
                         "id": 2,
                         "method": "tools/call",
@@ -184,52 +220,58 @@ def call_zapier_mcp_directly(action, parameters, zapier_mcp_url, zapier_mcp_api_
                             }
                         }
                     }
+                    
+                    logger.info(f"Calling tool {tool_name} with action: {action}")
+                    call_response = requests.post(zapier_mcp_url, headers=headers, json=call_payload, timeout=60)
+                    
+                    if call_response.status_code == 200:
+                        call_events = parse_sse_response(call_response.text)
+                        logger.info(f"Received {len(call_events)} events from tool call")
+                        
+                        # Extract the result from events
+                        for event in call_events:
+                            if event.get('type') == 'message' and isinstance(event.get('data'), dict):
+                                event_data = event['data']
+                                if 'result' in event_data:
+                                    return {
+                                        "success": True,
+                                        "action": action,
+                                        "message": f"Successfully executed {tool_name}",
+                                        "data": event_data['result']
+                                    }
+                        
+                        return {
+                            "success": True,
+                            "action": action,
+                            "message": f"Tool {tool_name} executed but no specific result data",
+                            "data": call_events
+                        }
+                    else:
+                        return {
+                            "success": False,
+                            "action": action,
+                            "message": f"Tool call failed: {call_response.status_code} - {call_response.text}",
+                            "data": None
+                        }
                 else:
                     return {
                         "success": False,
                         "action": action,
-                        "message": f"No suitable Salesforce tools found. Available tools: {tool_names}",
-                        "data": tools_data
+                        "message": f"No suitable tools found. Available: {tool_names}",
+                        "data": {"available_tools": available_tools}
                     }
             else:
                 return {
                     "success": False,
                     "action": action,
-                    "message": f"Could not retrieve tools list: {tools_data}",
-                    "data": tools_data
+                    "message": "No tools found in Zapier MCP response",
+                    "data": {"events": events}
                 }
         else:
-            logger.error(f"Tools list request failed: {tools_response.status_code} - {tools_response.text}")
-            # Fallback to a generic approach
-            payload = {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/call",
-                "params": {
-                    "name": "natural_language_action",
-                    "arguments": {
-                        "instructions": action
-                    }
-                }
-            }
-        
-        logger.info(f"Making request to {zapier_mcp_url}")
-        response = requests.post(zapier_mcp_url, headers=headers, json=payload, timeout=30)
-        
-        if response.status_code == 200:
-            result_data = response.json()
-            return {
-                "success": True,
-                "action": action,
-                "message": "Successfully retrieved data from Salesforce via Zapier MCP",
-                "data": result_data
-            }
-        else:
-            logger.error(f"Zapier MCP request failed: {response.status_code} - {response.text}")
             return {
                 "success": False,
                 "action": action,
-                "message": f"Zapier MCP request failed: {response.status_code} - {response.text}",
+                "message": f"Failed to list tools: {tools_response.status_code} - {tools_response.text}",
                 "data": None
             }
             

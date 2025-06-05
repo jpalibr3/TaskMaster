@@ -1,0 +1,158 @@
+Hello Replit,
+
+I require your assistance to create or significantly upgrade a Python application. This application will serve as an AI-powered assistant for interacting with Salesforce via Zapier's MCP (Meta-Call Protocol) service, orchestrated by OpenAI's API. The goal is a user-friendly, conversational tool with intelligent data handling and several advanced features to make Salesforce interactions easier and more efficient.
+
+Below is a detailed specification:
+
+I. Core Application Goal:
+
+To build a Python-based, command-line, chat-style AI assistant that:
+
+Accepts natural language commands from the user.
+Uses OpenAI's API (client.responses.create) to interact with a pre-configured Zapier MCP endpoint connected to Salesforce.
+Parses the JSON responses from Zapier/Salesforce intelligently.
+Presents information clearly and concisely, filtering out unnecessary data like null fields by default.
+Offers advanced usability features such as action confirmation, multi-result handling, contextual follow-ups, basic command history, and saving results.
+II. Core Features to Implement:
+
+A. Conversational (Chat-Style) Interface:
+1.  Main Loop: The script must run in a continuous while True: loop, allowing for an ongoing conversation.
+2.  Greeting & Persona: Start with a friendly greeting (e.g., "🤖 Hello! I'm your Salesforce AI Assistant. How can I assist you today? (Type '/quit' to exit)"). Maintain a helpful, clear, and consistent assistant persona in all outputs.
+3.  User Prompt: In each loop iteration, clearly prompt the user for their next command (e.g., "➡️ You: ").
+4.  Exit Command: Implement robust exit commands (e.g., /quit, /exit, /bye). The assistant should acknowledge with a goodbye message.
+5.  Clear I/O: Use distinct visual cues for assistant messages vs. user input. Provide feedback during operations (e.g., "🔍 Searching Salesforce for your request...").
+
+B. Intelligent Data Parsing & Presentation:
+1.  Target Data: This applies to Salesforce records (Contacts, Accounts, Opportunities, etc.) returned as JSON from Zapier MCP (typically within tool_result.outputs['text'], often structured like {'results': [RECORD_OBJECT]}).
+2.  Primary Information (Initial View):
+* When a single record is found and displayed, initially show only a predefined, easily modifiable list of important fields (e.g., at the top of the script, define PRIMARY_CONTACT_FIELDS = ['Id', 'Name', 'FirstName', 'LastName', 'Email', 'Phone', 'MobilePhone', 'Title', 'AccountId']).
+* Filter null Values: Automatically hide any field (from the primary list or any other display) if its value is null. Do not print lines like "Fax: null".
+3.  "Show More Details" Option:
+* After displaying the primary information for a single record, ask the user: "✨ Want to see all other available (non-null) details for this record? (yes/no)".
+* If "yes", display all other fields from the record object that are not null and were not part of the primary display.
+4.  Clear Formatting: Display data with clear labels and consistent indentation (see "Pretty Interface Guidance" below).
+
+C. Handling Multiple Results (Idea 2):
+1.  If the parsed_data['results'] array contains more than one record (e.g., from a broader search like "Find contacts at 'Acme Corp'"):
+* Inform the user: "I found multiple records matching your query:"
+* List each record concisely with a number, Name, and Email/ID (e.g., 1. John Doe (john.doe@email.com, ID: 003...), 2. Jane Doe (jane.doe@email.com, ID: 003...)).
+* Prompt the user: "Enter the number of the record you're interested in, or type '/new' for a new search."
+* If a number is selected, proceed to display that record's details (primary view, "show more" option, contextual follow-ups).
+
+D. Action Confirmation (Idea 8):
+1.  For commands that imply data creation or modification (e.g., inputs starting with "Create Salesforce...", "Update Salesforce...", "Log call..."):
+* Before making the API call to Zapier, the assistant should confirm: "❗ You're about to perform the action: '[User's Full Command String]'. Are you sure you want to proceed? (yes/no)".
+* Only proceed if the user confirms with "yes".
+
+E. Saving/Exporting Results (Idea 7):
+1.  After displaying the full details of a single record (either primary or after "show more"), ask the user: "💾 Would you like to save these details to a file? (yes/no)".
+2.  If "yes", prompt for a filename (or suggest a default like Salesforce_Contact_Name_Timestamp.txt).
+3.  Save the formatted, non-null details (both primary and "more" details if shown) to a .txt file within the Replit environment. Confirm save success.
+
+F. Basic Command History (Idea 4 - Simplified):
+1.  Store the last N (e.g., 5 or 10) raw user commands in a list.
+2.  Implement a command like /history to display this numbered list of recent commands.
+3.  Implement a command like /run <number> (e.g., /run 2) to re-execute a command from the displayed history list. (Error handling for invalid numbers is needed).
+
+G. Contextual Follow-Up Prompts (Idea 1):
+1.  After successfully displaying the details of a single specific record (e.g., a Contact after selection from multiple results or a direct find):
+* Offer 2-3 relevant follow-up actions as numbered options.
+* Example for a Contact:
+AI Assistant: What would you like to do next with [Contact Name]? 1. Log a call for this contact 2. Create a follow-up task for this contact 3. View linked Account details 4. Start a new search (Enter number, or type '/quit')
+* If the user selects an action (e.g., "1"), the script should then formulate a new tool_input string for Zapier (e.g., "Log a call for Salesforce contact [Contact Name/ID] regarding [Prompt user for subject/notes]"). This may require prompting the user for additional details needed for that specific action.
+
+III. Technical Guidelines:
+
+Secrets Management: Continue to load OPENAI_API_KEY, ZAPIER_MCP_SERVER_URL, and ZAPIER_MCP_API_KEY from Replit Secrets using os.getenv(). Provide clear error messages if secrets are missing.
+Core API Call: Use client.responses.create(...) to call the Zapier MCP endpoint.
+JSON Parsing: Implement robust parsing for the JSON response string (often in tool_result.outputs['text']). Handle potential JSONDecodeError exceptions. The primary target structure is usually {'results': [RECORD_OBJECT_OR_ARRAY]}.
+Modularity: Structure the Python code into functions for better organization (e.g., greet_user(), get_user_input(), process_command(), call_zapier_mcp(), display_single_record(), display_multiple_records(), handle_follow_up(), save_to_file(), manage_history()).
+Error Handling: Implement comprehensive try-except blocks for API calls, data processing, and user input handling. Provide user-friendly error messages.
+IV. "Pretty Interface" Guidance (for CLI):
+
+Clear Prompts & Output:
+Assistant: 🤖 Salesforce AI: Your message here...
+User input: ➡️ You: (on a new line after assistant's message)
+Spacing: Use blank lines (print()) to separate sections of conversation (e.g., before a new prompt, after results).
+Text Separators/Headers: Use simple text lines for visual structure:
+--- Main Menu ---
+=== Record Details for [Record Name] ===
+--- Options ---
+Lists: Format numbered or bulleted lists clearly with indentation:
+1. Option One
+2. Option Two
+Data Display: For key-value data from Salesforce records:
+Salesforce ID: 003ABC...
+Full Name:     John Doe
+Email Address: john.doe@example.com
+Align the colons if possible, or ensure consistent spacing.
+Emphasis (Subtle): Use asterisks for emphasis if needed, but sparingly.
+Progress/Feedback: Use simple text cues:
+🔍 Searching Salesforce... please wait.
+✅ Action Confirmed! Processing...
+💾 Details saved to [filename].
+❌ Error: [error message]. Please try again.
+(Optional) Simple Emojis: A few well-placed, common emojis can enhance visual appeal if they render well in Replit's console (e.g., 🤖, ➡️, 🔍, ✅, 💾, ❌, ✨, ❗). Use sparingly.
+V. Updated Example Interaction Flow Snippet:
+
+🤖 Salesforce AI: Hello! I'm your Salesforce AI Assistant. How can I assist you today? (Type '/quit' to exit, '/history' for command history)
+➡️ You: find contacts at Globex Corp
+
+🔍 Searching Salesforce for your request...
+🤖 Salesforce AI: I found multiple contacts at Globex Corp:
+                 1. Homer Simpson (homer.simpson@globex.com, ID: 003111...)
+                 2. Waylon Smithers (waylon.smithers@globex.com, ID: 003222...)
+                 3. Montgomery Burns (monty.burns@globex.com, ID: 003333...)
+                 Enter the number of the record you're interested in, or type '/new' for a new search.
+➡️ You: 2
+
+🔍 Fetching details for Waylon Smithers...
+🤖 Salesforce AI: === Record Details for Waylon Smithers ===
+                 Salesforce ID: 003222...
+                 Full Name:     Waylon Smithers
+                 Email:         waylon.smithers@globex.com
+                 Title:         Executive Assistant
+                 (Other primary, non-null fields...)
+
+                 ✨ Want to see all other available (non-null) details for this record? (yes/no)
+➡️ You: no
+
+🤖 Salesforce AI: What would you like to do next with Waylon Smithers?
+                 1. Log a call for this contact
+                 2. Create a follow-up task for this contact
+                 3. Start a new search
+                 (Enter number, or type '/quit')
+➡️ You: 1
+
+➡️ You: Please enter details for the call with Waylon Smithers:
+➡️ You: Discussed Q4 strategy
+
+❗ You're about to perform the action: 'Log a call for Salesforce contact Waylon Smithers regarding Discussed Q4 strategy'. Are you sure you want to proceed? (yes/no)
+➡️ You: yes
+
+✅ Action Confirmed! Processing...
+🤖 Salesforce AI: [Response from Zapier, e.g., "Call logged successfully for Waylon Smithers."]
+                 💾 Would you like to save the contact details for Waylon Smithers to a file? (yes/no)
+➡️ You: yes
+
+➡️ You: Please enter a filename (default: Waylon_Smithers_details.txt):
+➡️ You: 
+
+💾 Details saved to Waylon_Smithers_details.txt.
+🤖 Salesforce AI: What would you like to do next? (Type '/quit' to exit, '/history' for command history)
+➡️ You: /history
+
+🤖 Salesforce AI: --- Command History ---
+                 1. find contacts at Globex Corp
+                 2. 2
+                 3. no
+                 4. 1
+                 5. Discussed Q4 strategy
+                 6. yes
+                 7. yes
+                 8. 
+                 (Enter '/run <number>' to re-execute, or type your next command)
+➡️ You: /quit
+
+🤖 Salesforce AI: Goodbye! Hope I was helpful today.
+This detailed prompt should provide a solid foundation for building the enhanced Salesforce AI Assistant in Python on Replit.
