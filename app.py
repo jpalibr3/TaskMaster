@@ -108,38 +108,47 @@ class SalesforceWebAssistant:
 Available Zapier Tools:
 {chr(10).join(f"- {tool}" for tool in available_zapier_tools)}
 
-Your task is to analyze the user's raw query and transform it into a natural language sentence that Zapier MCP can parse correctly.
+Your task is to analyze the user's raw query and transform it into simple, natural language that mimics how humans would phrase searches, allowing Zapier's MCP to correctly infer the operator and isolate the search value.
 
 Guidelines for optimization:
 1. Identify the core intent (find single record, find multiple records, create, update, etc.)
 2. Determine the target Salesforce Object (Account, Contact, Opportunity, Lead, etc.)
 3. Extract relevant field names, values, and search operators
 4. Determine if the user expects single or multiple results
-5. Select the most appropriate Zapier tool based on the intent
-6. Generate output using natural sentence structure
+5. Generate output using simple, natural phrasing that avoids explicit operator keywords
 
-CRITICAL: Your output MUST be a single, natural language sentence formatted to help Zapier's MCP parse it correctly. For find operations, use this structure:
-"Find Salesforce [Object] [records/record] where [Field] [operator] '[Value]'"
+CRITICAL: Your output MUST be a simple, natural language string that helps Zapier correctly parse the object, field, and search value. Avoid using explicit operator words like "contains", "equals" that confuse Zapier's search value extraction.
+
+For direct lookups (equals/exact matches):
+- Pattern: "Find [Object] [field]: [Value]"
+- Pattern: "Find [Object] with the [field] [Value]"
+
+For contains searches:
+- Pattern: "Show me [Object] records with '[Value]' in the [Field Name]"  
+- Pattern: "[Object] with '[Value]' in [Field Name]"
 
 Template Guidelines:
-- Use "records" for multiple results, "record" for single results
-- Map user terms to proper Salesforce field names (e.g., "name" → "Account Name" for accounts)
-- Use simple operators: "contains", "equals", "starts with"
-- ALWAYS enclose the search value in single quotes
-- Do NOT use explicit keywords like "Action:", "Object:", "Field:", "Value:" in the output
+- Use natural, human-like phrasing
+- Always enclose search values in single quotes to help Zapier isolate them
+- Use plural forms (records, accounts, contacts) for multiple results
+- Use singular forms for unique lookups
+- Map user terms to proper field names (name → Account Name, email → Email)
 
 Examples:
 - Raw: "show me accounts with zapier in the name" 
-  → Optimized: "Find Salesforce Account records where Account Name contains 'Zapier'"
+  → Optimized: "Show me Account records with 'Zapier' in the Account Name"
 
 - Raw: "find john smith contact"
-  → Optimized: "Find Salesforce Contact records where Name contains 'John Smith'"
+  → Optimized: "Contacts with 'John Smith' in Name"
 
 - Raw: "get the QA testing account"
-  → Optimized: "Find Salesforce Account records where Account Name contains 'QA'"
+  → Optimized: "Account records with 'QA' in Account Name"
 
 - Raw: "contact email chris@alibre.com"
-  → Optimized: "Find Salesforce Contact record where Email equals 'chris@alibre.com'"
+  → Optimized: "Find Contact with the email chris@alibre.com"
+
+- Raw: "account QA TESTING"
+  → Optimized: "Find Account name: QA TESTING"
 
 - Raw: "create new lead for jane doe at acme corp"
   → Optimized: "Create new Salesforce Lead record with FirstName 'Jane', LastName 'Doe', Company 'Acme Corp'"
