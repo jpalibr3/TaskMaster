@@ -828,11 +828,25 @@ def send_command():
                             'display': f"{name} ({email})" if email else name
                         })
                     
+                    # Determine object type from the command
+                    object_type = "Unknown"
+                    if "asset" in command.lower():
+                        object_type = "Asset"
+                    elif "contact" in command.lower():
+                        object_type = "Contact"
+                    elif "account" in command.lower():
+                        object_type = "Account"
+                    elif "opportunity" in command.lower():
+                        object_type = "Opportunity"
+                    elif "lead" in command.lower():
+                        object_type = "Lead"
+                    
                     return jsonify({
                         'success': True,
                         'type': 'multiple_records',
                         'records': record_summaries,
                         'count': count,
+                        'object_type': object_type,
                         'message': f"Found {count} records matching your query"
                     })
             else:
@@ -860,55 +874,64 @@ def get_record_details():
     """Get full details for a specific record from a multiple results list."""
     try:
         data = request.get_json()
-        record_index = data.get('record_index')
-        original_command = data.get('original_command', '')
+        record_id = data.get('record_id')
+        record_type = data.get('record_type')
         
-        if record_index is None:
+        if not record_id:
             return jsonify({
                 'success': False,
-                'error': 'Record index not provided'
+                'error': 'Record ID not provided'
             })
         
-        # Re-execute the original command to get the data
-        result = assistant.call_zapier_mcp(original_command)
+        if not record_type:
+            return jsonify({
+                'success': False,
+                'error': 'Record type not provided'
+            })
+        
+        # Construct a specific command to fetch the record by its ID
+        specific_command = f"Find {record_type} with Id {record_id}"
+        logger.info(f"Executing specific command for get_record_details: {specific_command}")
+        
+        # Process this specific command using the existing NLU and Zapier call mechanism
+        optimized_command = assistant.get_optimized_zapier_input(specific_command, assistant.available_zapier_tools)
+        result = assistant.call_zapier_mcp(optimized_command)
         
         if result['success']:
             parsed_data = assistant.parse_salesforce_data(result['data'])
             
-            if parsed_data['parsed'] and parsed_data['results']:
-                results = parsed_data['results']
+            if parsed_data['parsed'] and parsed_data['results'] and parsed_data['count'] > 0:
+                # Get the first record (should be the one we're looking for by ID)
+                record_detail = parsed_data['results'][0] if isinstance(parsed_data['results'], list) else parsed_data['results']
+                formatted_record = assistant.format_record_for_display(record_detail)
+                follow_ups = assistant.get_follow_up_actions(record_detail)
                 
-                if 0 <= record_index < len(results):
-                    record = results[record_index]
-                    formatted_record = assistant.format_record_for_display(record)
-                    follow_ups = assistant.get_follow_up_actions(record)
-                    
-                    return jsonify({
-                        'success': True,
-                        'record': formatted_record,
-                        'follow_ups': follow_ups
-                    })
-                else:
-                    return jsonify({
-                        'success': False,
-                        'error': 'Invalid record index'
-                    })
+                return jsonify({
+                    'success': True,
+                    'record': formatted_record,
+                    'follow_ups': follow_ups
+                })
             else:
+                error_msg = f"Could not find details for {record_type} with ID {record_id}."
+                if result.get('data'):
+                    error_msg += f" Zapier response: {str(result['data'])[:200]}"
+                logger.warning(error_msg)
                 return jsonify({
                     'success': False,
-                    'error': 'Could not parse record data'
+                    'error': error_msg
                 })
         else:
+            logger.error(f"Zapier call failed for specific command '{specific_command}': {result.get('error')}")
             return jsonify({
                 'success': False,
-                'error': result['error']
+                'error': result.get('error', 'Failed to fetch record details from Zapier')
             })
             
     except Exception as e:
-        logger.error(f"Error getting record details: {e}")
+        logger.error(f"Critical error in /api/get_record_details: {e}", exc_info=True)
         return jsonify({
             'success': False,
-            'error': f'An unexpected error occurred: {str(e)}'
+            'error': f'An unexpected server error occurred: {str(e)}'
         })
 
 @app.route('/api/show_more_details', methods=['POST'])

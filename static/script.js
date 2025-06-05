@@ -200,9 +200,10 @@ class SalesforceAI {
         this.scrollToBottom();
     }
     
-    displayMultipleRecords(records, message, originalCommand) {
+    displayMultipleRecords(records, message, originalCommand, objectType = null) {
         this.currentRecords = records;
         this.originalCommand = originalCommand;
+        this.currentRecordsObjectType = objectType;
         
         this.addMessage(message, 'ai');
         this.showRecordSelection(records);
@@ -230,6 +231,16 @@ class SalesforceAI {
         this.hideModal('recordSelectionModal');
         this.showLoading();
         
+        const selectedRecord = this.currentRecords[index];
+        if (!selectedRecord || !selectedRecord.id) {
+            this.addMessage('Error: Could not retrieve the ID for the selected record.', 'ai', 'error');
+            this.hideLoading();
+            return;
+        }
+        
+        const recordId = selectedRecord.id;
+        const recordType = this.currentRecordsObjectType || 'Asset'; // Default to Asset if not specified
+        
         try {
             const response = await fetch('/api/get_record_details', {
                 method: 'POST',
@@ -237,20 +248,20 @@ class SalesforceAI {
                     'Content-Type': 'application/json',
                 },
                 body: JSON.stringify({
-                    record_index: index,
-                    original_command: this.originalCommand
+                    record_id: recordId,
+                    record_type: recordType
                 })
             });
             
             const data = await response.json();
             
             if (data.success) {
-                this.displaySingleRecord(data.record, data.follow_ups, `Selected: ${data.record.record_name}`);
+                this.displaySingleRecord(data.record, data.follow_ups, `Details for: ${data.record.record_name}`);
             } else {
-                this.addMessage(`Error: ${data.error}`, 'ai', 'error');
+                this.addMessage(`Error retrieving details: ${data.error}`, 'ai', 'error');
             }
         } catch (error) {
-            this.addMessage(`Error selecting record: ${error.message}`, 'ai', 'error');
+            this.addMessage(`Connection error while getting details: ${error.message}`, 'ai', 'error');
         } finally {
             this.hideLoading();
         }
