@@ -1,0 +1,128 @@
+Okay, I've reviewed your Python code, particularly `app.py`, and the NLU strategy you're aiming for where NLP is used to generate SOQL queries for Salesforce via Zapier MCP.
+
+Currently, your `app.py` file's `get_optimized_zapier_input` function directly generates natural language commands for Zapier (e.g., "Find Account name: QA TESTING" or "show me accounts with the name QA in the account name") **without** an intermediate SOQL generation step.
+
+To implement the SOQL generation strategy as detailed in your instructions (specifically those outlined in the file `Pasted-Hello-Replit-Agent-We-are-implementing-a-new-strategy-for-the-NLU-pre-processing-layer-in-my-Pytho-1749094287844_1749094287845.txt`), you'll need to make the following exact changes to your `app.py` file:
+
+---
+## Changes for `get_optimized_zapier_input` Function in `app.py`
+
+This function needs to be significantly modified to implement a two-stage NLU process:
+
+**1. Stage 1: Generate SOQL Query**
+    * **Replace the existing `system_prompt`**: The current `system_prompt` is designed for direct natural language output. You need to replace it with the system prompt specifically designed for SOQL generation. This prompt is detailed in your instructions and should instruct the AI to:
+        * Translate raw user queries into valid SOQL SELECT statements.
+        * Identify the Salesforce Object, essential fields, and construct WHERE and LIMIT clauses.
+        * Handle escaping for search values.
+        * Return "ERROR:SOQL\_GENERATION\_FAILED" if a valid SOQL query cannot be constructed.
+    * **OpenAI API Call for SOQL**: The `self.client.chat.completions.create(...)` call will use this new system prompt.
+    * **Process SOQL Generation Output**:
+        * Capture the AI's response. This will be either the generated SOQL string or the "ERROR:SOQL\_GENERATION\_FAILED" string.
+
+**2. Stage 2: Construct Zapier Input String from SOQL**
+    * **Conditional Logic**:
+        * **If SOQL generation failed** (i.e., you received "ERROR:SOQL\_GENERATION\_FAILED"): The function should return this error indicator, or a more user-friendly message as specified in your requirements (e.g., "Sorry, I could not translate your request into a Salesforce query. Please try rephrasing.").
+        * **If SOQL generation succeeded**: Take the generated SOQL string.
+    * **Format the Zapier Input String**: Construct a new string that tells Zapier to use its "Salesforce: Find Record(s) by Query" tool. The template for this string is: `"Use Salesforce: Find Record(s) by Query with the SOQL query: '[GENERATED_SOQL_STRING]'"`. Ensure the generated SOQL string is correctly embedded.
+
+**3. Logging**
+    * Add logging statements to record the raw user query, the generated SOQL string (if successful), and the final optimized input string being sent to Zapier. This will be crucial for debugging.
+        ```python
+        # Example within get_optimized_zapier_input
+        # After SOQL generation:
+        logger.info(f"Generated SOQL: '{generated_soql_string_or_error}'")
+        # Before returning the final Zapier instruction:
+        logger.info(f"Final Zapier Instruction: '{final_zapier_instruction}'")
+        ```
+
+**Example of the new `get_optimized_zapier_input` structure:**
+```python
+    def get_optimized_zapier_input(self, raw_user_query: str, available_zapier_tools: List[str]) -> str:
+        logger.info(f"NLU Pre-processing raw query: {raw_user_query}")
+        try:
+            if not self.client:
+                logger.error("OpenAI client not initialized for NLU pre-processing")
+                return raw_user_query # Fallback or error
+
+            # STAGE 1: Generate SOQL Query
+            soql_system_prompt = """ # Paste the SOQL Generation System Prompt here from
+            You are an AI assistant that translates raw, natural language user queries about Salesforce 
+            into valid SOQL (Salesforce Object Query Language) SELECT statements...
+            If the user query is too vague... return the specific string "ERROR:SOQL_GENERATION_FAILED".
+            """ # (Ensure this prompt is fully populated as per your detailed spec)
+
+            soql_response = self.client.chat.completions.create(
+                model="gpt-4o", # Or your preferred model
+                messages=[
+                    {"role": "system", "content": soql_system_prompt},
+                    {"role": "user", "content": raw_user_query}
+                ],
+                max_tokens=300, # Adjust as needed for SOQL
+                temperature=0.1 # Adjust for precision
+            )
+
+            generated_soql_string = ""
+            if soql_response.choices and soql_response.choices[0].message and soql_response.choices[0].message.content:
+                generated_soql_string = soql_response.choices[0].message.content.strip()
+            else:
+                logger.error("Invalid or empty response from SOQL generation LLM call")
+                return "Sorry, I encountered an issue processing your request for SOQL. Please try again."
+
+
+            logger.info(f"NLU Stage 1 (SOQL Generation): Raw Query='{raw_user_query}' -> SOQL/Error='{generated_soql_string}'")
+
+            # STAGE 2: Construct Zapier Input String
+            if "ERROR:SOQL_GENERATION_FAILED" in generated_soql_string:
+                logger.warning(f"SOQL generation failed for query: {raw_user_query}")
+                return "Sorry, I could not translate your request into a Salesforce query. Please try rephrasing."
+
+            # Ensure the SOQL is clean and doesn't have unwanted prefixes if the LLM adds any
+            # For example, if the LLM sometimes returns "SOQL: SELECT ..."
+            if "SELECT" not in generated_soql_string.upper():
+                 logger.error(f"NLU generated invalid SOQL (missing SELECT): {generated_soql_string}")
+                 return "Sorry, I could not construct a valid Salesforce query. Please rephrase your request."
+            
+            # Ensure quotes are handled for the SOQL string itself if it's embedded
+            # The template "[GENERATED_SOQL_STRING]" suggests it's embedded directly.
+            # If the SOQL string needs escaping for the final string, do it here.
+            
+            final_zapier_instruction = f"Use Salesforce: Find Record(s) by Query with the SOQL query: '{generated_soql_string}'"
+            logger.info(f"NLU Stage 2 (Zapier Instruction Construction): SOQL='{generated_soql_string}' -> Zapier Instruction='{final_zapier_instruction}'")
+            
+            return final_zapier_instruction
+
+        except Exception as e:
+            logger.error(f"NLU pre-processing (SOQL strategy) failed: {e}")
+            return raw_user_query # Fallback to original query or a generic error message
+```
+
+---
+## Adjustments in `/api/send_command` Endpoint
+
+* **Error Handling**: Modify the endpoint to specifically check for and handle the "ERROR:SOQL\_GENERATION\_FAILED" (or the user-friendly message) returned by the updated `get_optimized_zapier_input` function. If this error occurs, the endpoint should relay an appropriate message to the frontend instead of proceeding to call Zapier.
+    ```python
+    # Inside /api/send_command
+    optimized_command = assistant.get_optimized_zapier_input(command, assistant.available_zapier_tools)
+    
+    if "Sorry, I could not translate your request" in optimized_command or "ERROR:SOQL_GENERATION_FAILED" in optimized_command:
+        return jsonify({
+            'success': False,
+            'error': optimized_command, # Send the user-friendly error from NLU
+            'type': 'nlu_error' # Or a more specific type
+        })
+    
+    # Proceed with Zapier call if no NLU error
+    logger.info(f"Sending to Zapier (via SOQL strategy): {optimized_command}")
+    result = assistant.call_zapier_mcp(optimized_command)
+    # ... rest of the logic
+    ```
+
+---
+## Potential Adjustments for `parse_salesforce_data`
+
+* The structure of the JSON response from Zapier when using the "Find Record(s) by Query" tool (which executes SOQL) might differ from responses when using other "Find Record(s)" tools.
+* You may need to inspect the actual responses from Zapier after implementing the SOQL strategy and adjust the `parse_salesforce_data` function to correctly extract the Salesforce records. Pay attention to how `results` and `count` are derived. The `debug_zapier.py` script could be useful here for inspecting raw responses.
+
+---
+
+By making these changes, your `app.py` will align with the NLU-to-SOQL strategy you've detailed, allowing for more precise Salesforce queries. Remember to thoroughly test the SOQL generation with various user inputs.
