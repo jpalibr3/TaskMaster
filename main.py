@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import requests
 from openai import OpenAI
 
 # Configure logging for debugging
@@ -113,22 +114,149 @@ def call_zapier_mcp_via_openai(client, command, zapier_mcp_url, zapier_mcp_api_k
         logger.error(f"OpenAI API call failed: {e}")
         raise
 
-def simulate_zapier_mcp_call(action, parameters):
+def call_zapier_mcp_directly(action, parameters, zapier_mcp_url, zapier_mcp_api_key):
     """
-    Since we don't have direct MCP integration in the OpenAI client,
-    this function simulates what would happen with a real MCP call.
-    In a real implementation, this would make an HTTP request to the Zapier MCP server.
+    Makes actual HTTP request to Zapier MCP server.
     """
-    logger.info(f"Simulating Zapier MCP call - Action: {action}, Parameters: {parameters}")
+    logger.info(f"Calling Zapier MCP - Action: {action}, Parameters: {parameters}")
     
-    # This is where you would make the actual HTTP request to Zapier MCP
-    # For now, we'll return a simulated response
-    return {
-        "success": True,
-        "action": action,
-        "message": f"Successfully processed Salesforce action: {action}",
-        "data": parameters
-    }
+    try:
+        headers = {
+            "Authorization": f"Bearer {zapier_mcp_api_key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream"
+        }
+        
+        # First, let's discover what tools are available
+        tools_payload = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/list"
+        }
+        
+        logger.info("Discovering available Zapier MCP tools...")
+        tools_response = requests.post(zapier_mcp_url, headers=headers, json=tools_payload, timeout=30)
+        
+        logger.info(f"Tools response status: {tools_response.status_code}")
+        logger.info(f"Tools response headers: {tools_response.headers}")
+        logger.info(f"Tools response text: {tools_response.text}")
+        
+        if tools_response.status_code == 200:
+            try:
+                tools_data = tools_response.json()
+                logger.info(f"Available tools: {tools_data}")
+            except Exception as e:
+                logger.error(f"Failed to parse tools response as JSON: {e}")
+                return {
+                    "success": False,
+                    "action": action,
+                    "message": f"Failed to parse Zapier MCP response: {e}",
+                    "data": {"response_text": tools_response.text, "status_code": tools_response.status_code}
+                }
+            
+            # Try to find a suitable tool for the action
+            if 'result' in tools_data and 'tools' in tools_data['result']:
+                available_tools = tools_data['result']['tools']
+                tool_names = [tool.get('name', 'unknown') for tool in available_tools]
+                logger.info(f"Tool names: {tool_names}")
+                
+                # Use the first available tool that seems related to Salesforce
+                salesforce_tool = None
+                for tool in available_tools:
+                    tool_name = tool.get('name', '').lower()
+                    if 'salesforce' in tool_name or 'search' in tool_name or 'find' in tool_name:
+                        salesforce_tool = tool
+                        break
+                
+                if not salesforce_tool and available_tools:
+                    salesforce_tool = available_tools[0]  # Use first available tool
+                
+                if salesforce_tool:
+                    tool_name = salesforce_tool.get('name')
+                    payload = {
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "method": "tools/call",
+                        "params": {
+                            "name": tool_name,
+                            "arguments": {
+                                "instructions": action
+                            }
+                        }
+                    }
+                else:
+                    return {
+                        "success": False,
+                        "action": action,
+                        "message": f"No suitable Salesforce tools found. Available tools: {tool_names}",
+                        "data": tools_data
+                    }
+            else:
+                return {
+                    "success": False,
+                    "action": action,
+                    "message": f"Could not retrieve tools list: {tools_data}",
+                    "data": tools_data
+                }
+        else:
+            logger.error(f"Tools list request failed: {tools_response.status_code} - {tools_response.text}")
+            # Fallback to a generic approach
+            payload = {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "natural_language_action",
+                    "arguments": {
+                        "instructions": action
+                    }
+                }
+            }
+        
+        logger.info(f"Making request to {zapier_mcp_url}")
+        response = requests.post(zapier_mcp_url, headers=headers, json=payload, timeout=30)
+        
+        if response.status_code == 200:
+            result_data = response.json()
+            return {
+                "success": True,
+                "action": action,
+                "message": "Successfully retrieved data from Salesforce via Zapier MCP",
+                "data": result_data
+            }
+        else:
+            logger.error(f"Zapier MCP request failed: {response.status_code} - {response.text}")
+            return {
+                "success": False,
+                "action": action,
+                "message": f"Zapier MCP request failed: {response.status_code} - {response.text}",
+                "data": None
+            }
+            
+    except requests.exceptions.Timeout:
+        logger.error("Zapier MCP request timed out")
+        return {
+            "success": False,
+            "action": action,
+            "message": "Request to Zapier MCP timed out",
+            "data": None
+        }
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Zapier MCP request error: {e}")
+        return {
+            "success": False,
+            "action": action,
+            "message": f"Request error: {e}",
+            "data": None
+        }
+    except Exception as e:
+        logger.error(f"Unexpected error calling Zapier MCP: {e}")
+        return {
+            "success": False,
+            "action": action,
+            "message": f"Unexpected error: {e}",
+            "data": None
+        }
 
 def process_openai_response(response):
     """
@@ -148,8 +276,10 @@ def process_openai_response(response):
                     action = args.get("action", "unknown")
                     parameters = args.get("parameters", {})
                     
-                    # Simulate the MCP call (in real implementation, this would be actual HTTP request)
-                    mcp_result = simulate_zapier_mcp_call(action, parameters)
+                    # Make actual call to Zapier MCP
+                    zapier_mcp_url = os.getenv("ZAPIER_MCP_SERVER_URL")
+                    zapier_mcp_api_key = os.getenv("ZAPIER_MCP_API_KEY")
+                    mcp_result = call_zapier_mcp_directly(action, parameters, zapier_mcp_url, zapier_mcp_api_key)
                     results.append(mcp_result)
             
             return results
