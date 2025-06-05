@@ -1,0 +1,14 @@
+[tool.poetry]
+name = "replit-openai-zapier-salesforce"
+version = "0.1.0"
+description = "Python script to call Zapier MCP (via OpenAI) for Salesforce actions, hosted on Replit."
+authors = ["Your Name <you@example.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = ">=3.8"
+openai = "^1.0.0"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
